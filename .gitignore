@@ -1,0 +1,42 @@
+# Local data and credentials
+labeling/data/
+labeling/dynamic_labels/token.txt
+.env
+.env.*
+!.env.example
+!.env.sample
+*.sqlite3
+*.sqlite3-*
+*.sqlite3.backup*
+
+# Local runtime
+labeling/logs/
+labeling/tools/
+*.log
+*.pid
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Frontend
+node_modules/
+dist/
+build/
+.next/
+
+# Editor and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
