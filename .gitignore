@@ -40,3 +40,11 @@ build/
 Thumbs.db
 *.swp
 *.swo
+
+# MobileSAM Backend & Model weights
+*.pt
+*.pth
+weights/
+*/weights/
+token.txt
+*/token.txt
