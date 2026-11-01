@@ -90,7 +90,11 @@ class SAMBackend(LabelStudioMLBase):
         **kwargs
     ):
         super(SAMBackend, self).__init__(**kwargs)
-
+        # KHẮC PHỤC LỖI: Đảm bảo model_dir luôn là chuỗi đường dẫn hợp lệ, không bao giờ là None
+        if not getattr(self, "model_dir", None):
+            self.model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models_cache")
+        os.makedirs(self.model_dir, exist_ok=True)
+        
         self.model_version = f"sam-{model_type}"
         self.approx_epsilon = float(os.getenv("APPROX_EPSILON", approx_epsilon))
         self.min_contour_area = float(os.getenv("MIN_CONTOUR_AREA", min_contour_area))
