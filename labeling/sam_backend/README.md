@@ -1,190 +1,198 @@
-# Label Studio ML Backend: Tích hợp SAM / MobileSAM với Box Prompt (Interactive Segmentation)
+# Label Studio ML Backend – MobileSAM
 
-Tài liệu hướng dẫn triển khai và tích hợp mô hình **Segment Anything Model (MobileSAM)** vào **Label Studio** thông qua cơ chế gợi ý tương tác bằng **Bounding Box (Box Prompt)**.
+**Interactive Segmentation · Batch Auto-Segment · Dynamic Labels · Auto-Provisioning**
+
+ML Backend tích hợp **MobileSAM** vào **Label Studio**, hỗ trợ tự động bọc viền đa giác (Polygon Segmentation) từ Bounding Box cho cả gán nhãn tương tác trực tiếp và xử lý hàng loạt file JSON.
 
 ---
 
-## 1. Kiến trúc & Cơ chế hoạt động (System Architecture)
+## 1. Tính năng nổi bật
+
+1. **Interactive Segmentation (Box Prompt):** Kéo Bounding Box quanh đối tượng trên ảnh -> MobileSAM tự động suy luận Binary Mask và chuyển đổi thành viền đa giác Polygon ôm sát đối tượng.
+2. **Batch Auto-Segment từ JSON:** Đọc danh sách Bounding Box từ dữ liệu JSON import vào Label Studio và tự động tạo Polygon hàng loạt qua lệnh _Retrieve Predictions_.
+3. **Auto-Provisioning:** Tự động nạp cấu hình giao diện `label_config.xml`, kết nối ML Backend cổng 9090 và gán Webhook vào dự án mới qua Label Studio API.
+4. **Dynamic Labels:** Tiếp nhận tên nhãn mới linh hoạt thông qua ô nhập text và tự động đồng bộ vào danh sách nhãn.
+5. **LRU Embedding Cache:** Lưu trữ Image Embedding tạm thời trên RAM, giúp các thao tác vẽ box tiếp theo trên cùng một ảnh phản hồi tức thì (< 30ms).
+
+---
+
+## 2. Kiến trúc hoạt động
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Annotator as Người gán nhãn
-    participant UI as Giao diện Label Studio (Port 19090)
-    participant ML as SAM ML Backend (Port 9090)
-    participant Cache as LRU Embedding Cache
-    participant SAM as SamPredictor (MobileSAM)
+    participant UI as Label Studio (19090)
+    participant ML as SAM Backend (9090)
+    participant SAM as MobileSAM
 
-    Annotator->>UI: Vẽ Bounding Box (RectangleLabels) quanh đối tượng
-    UI->>ML: Gửi POST /predict (tasks + context gồm tọa độ x, y, w, h %)
-    
-    alt Task ID / Image chưa có trong Cache (Lần đầu)
-        ML->>SAM: predictor.set_image(image) (Image Encoder)
-        SAM->>Cache: Lưu trữ image embeddings & kích thước gốc
-    else Task ID / Image đã có trong Cache (Các lần vẽ tiếp theo)
-        Cache-->>ML: Tái sử dụng features tức thì (Bỏ qua Image Encoder)
+    alt Chế độ 1: Interactive (Vẽ tay)
+        Annotator->>UI: Kéo chuột tạo Bounding Box
+        UI->>ML: POST /predict (Task + Context Box %)
+        ML->>SAM: predictor.predict(Box) (Sử dụng LRU Cache)
+        SAM-->>ML: Binary Mask
+        ML->>ML: cv2.findContours() -> Tọa độ Polygon
+        ML-->>UI: Trả về Polygon Prediction hiển thị trên ảnh
+    else Chế độ 2: Batch (Từ file JSON)
+        Annotator->>UI: Import JSON -> Actions -> Retrieve Predictions
+        UI->>ML: POST /predict (Danh sách Tasks)
+        loop Duyệt từng Bounding Box trong task
+            ML->>SAM: predictor.predict(Box)
+            SAM-->>ML: Binary Mask -> Chuyển thành Polygon
+        end
+        ML-->>UI: Trả về toàn bộ viền Polygon cho tập dữ liệu
     end
-
-    ML->>SAM: predictor.predict(box=xyxy_pixels, multimask_output=False)
-    SAM-->>ML: Xuất Binary Mask ôm khít viền đối tượng
-    ML->>ML: cv2.findContours() + approxPolyDP() giảm đỉnh
-    ML->>ML: Chuẩn hóa tọa độ đỉnh về thang đo % [0, 100]
-    ML-->>UI: Trả về kết quả JSON chuẩn PolygonLabels
-    UI-->>Annotator: Hiển thị ngay lập tức viền đa giác (Polygon) trên ảnh!
 ```
 
 ---
 
-## 2. Cấu trúc thư mục
+## 3. Cấu trúc thư mục
 
 ```text
-Labeling/
-├── labeling/
-│   └── sam_backend/
-│       ├── _sam_backend.py        # Code chính xử lý ML Backend, LRU Cache, SAM Predictor
-│       ├── _wsgi.py               # WSGI entrypoint tương thích label-studio-ml CLI
-│       ├── label_config.xml       # Cấu hình giao diện nhãn XML cho Label Studio
-│       ├── requirements.txt       # Danh sách thư viện phụ thuộc
-│       ├── weights/
-│       │   └── mobile_sam.pt      # Trọng số MobileSAM (39 MB, tự động tải nếu thiếu)
-│       └── README.md              # Hướng dẫn chi tiết
-├── _sam_backend.py                # Wrapper chuyển tiếp ở thư mục gốc
-├── test_backend.py                # Script kiểm thử tự động offline
-├── start_sam_backend.bat          # Script khởi động 1-click cho Windows
-└── start_sam_backend.sh           # Script khởi động cho Linux/macOS
+labeling/
+└── sam_backend/
+    ├── _sam_backend.py        # Backend chính (MobileSAM, Batch Inference, Cache, Webhook)
+    ├── _wsgi.py               # WSGI entrypoint chuẩn Label Studio ML
+    ├── label_config.xml       # Bản thiết kế giao diện XML chuẩn (Smart Box + Polygon)
+    ├── requirements.txt       # Danh sách thư viện phụ thuộc (Web + Backend AI)
+    ├── start_sam_backend.bat  # Script chạy 1-Click trên Windows
+    ├── start_sam_backend.sh   # Script chạy trên Linux/macOS
+    ├── test_backend.py        # Script kiểm thử offline & đo hiệu năng Cache
+    ├── token.txt              # Access Token kết nối Label Studio API (tạo cục bộ, không commit)
+    ├── weights/
+    │   └── mobile_sam.pt      # Trọng số MobileSAM (39 MB, tự tải nếu thiếu)
+    └── README.md              # Tài liệu hướng dẫn
 ```
+
+> **Lưu ý bảo mật:** Không commit file `token.txt` lên GitHub. File này đã được đưa vào `.gitignore`.
 
 ---
 
-## 3. Cài đặt môi trường (Installation)
+## 4. Yêu cầu hệ thống
 
-Yêu cầu Python >= 3.9 (đã được kiểm thử trên cả CPU và GPU CUDA).
+- **Python:** >= 3.9 (kiểm thử trên cả CPU và GPU CUDA).
+- **Git:** Bắt buộc cài trên máy để cài đặt gói MobileSAM từ GitHub.
+- **Hệ điều hành:** Hỗ trợ đầy đủ Windows, Ubuntu/Linux và macOS.
+
+---
+
+## 5. Cài đặt môi trường
+
+Mở Terminal tại thư mục gốc dự án (`labeling_tool`):
 
 ```bash
-# Cài đặt các thư viện cần thiết
+# 1. Tạo và kích hoạt môi trường ảo (Khuyến nghị)
+python -m venv .venv
+
+# Trên Windows:
+.venv\Scripts\activate
+
+# Trên Linux/macOS:
+source .venv/bin/activate
+
+# 2. Cài đặt toàn bộ thư viện (gồm cả Label Studio và SAM Backend)
 pip install -r labeling/sam_backend/requirements.txt
 ```
 
-Hoặc cài trực tiếp:
-```bash
-pip install label-studio-ml torch torchvision opencv-python timm requests
-pip install git+https://github.com/ChaoningZhang/MobileSAM.git
-```
-
 ---
 
-## 4. Kiểm thử Backend offline (Verification)
+## 6. Khởi động hệ thống
 
-Chạy file script test có sẵn để xác nhận mô hình tải trọng số, chạy suy luận và kiểm tra tính hiệu quả của LRU Cache:
+Hệ thống yêu cầu chạy **2 Terminal song song**:
 
-```bash
-python test_backend.py
-```
+### Terminal 1: Khởi động SAM ML Backend (Port 9090)
 
-**Kết quả kiểm thử thực tế trên CPU cục bộ:**
-* **Lần 1 (Cache Miss - trích xuất Image Encoder):** ~2.2s (tạo 37 đỉnh đa giác, độ chính xác score = 0.9981).
-* **Lần 2 (Cache Hit - tái sử dụng đặc trưng ảnh):** ~172ms (**tăng tốc gấp 13.2x**).
+Mở Terminal tại thư mục gốc `labeling_tool`:
 
----
+**Trên Windows:**
 
-## 5. Khởi chạy ML Backend Server
-
-### Cách 1: Chạy trực tiếp qua script (Khuyến nghị trên Windows)
-```bash
-# Windows
-start_sam_backend.bat
-
-# Hoặc bằng Python trực tiếp:
+```bat
 python labeling/sam_backend/_sam_backend.py --port 9090
 ```
 
-### Cách 2: Chạy qua lệnh `label-studio-ml`
+_(Hoặc nhấp đúp file `labeling\sam_backend\start_sam_backend.bat`)_
+
+**Trên Linux / macOS:**
+
 ```bash
-label-studio-ml start labeling/sam_backend --port 9090
+chmod +x labeling/sam_backend/start_sam_backend.sh
+./labeling/sam_backend/start_sam_backend.sh
 ```
 
-Khi server khởi động thành công, bạn sẽ thấy thông báo:
+Khi khởi động thành công:
+
 ```text
-[SERVER READY] ML Backend đang chạy tại http://localhost:9090
+[MODEL] Khởi tạo MobileSAM thành công!
+[SERVER READY] MobileSAM (Interactive + Auto-Batch Import) đang chạy tại http://localhost:9090
 ```
 
----
+### Terminal 2: Khởi động Label Studio Web (Port 19090)
 
-## 6. Cấu hình Project trên Label Studio
+Mở Terminal thứ 2 độc lập tại thư mục gốc `labeling_tool`:
 
-### Bước 1: Cấu hình giao diện nhãn (Labeling Interface)
-1. Mở Label Studio trên trình duyệt (`http://localhost:19090`).
-2. Vào Project của bạn -> chọn **Settings** -> **Labeling Interface** -> **Code View**.
-3. Dán toàn bộ nội dung từ file [label_config.xml](file:///C:/Users/win10/Desktop/Labeling/labeling/sam_backend/label_config.xml):
+**Trên Windows:**
 
-```xml
-<View>
-  <!-- Vùng hiển thị ảnh -->
-  <Image name="image" value="$image" zoom="true" zoomBy="1.5" rotateControl="true"/>
-
-  <!-- 1. Bounding Box Prompt dùng để khoanh vùng đối tượng cho SAM -->
-  <Header value="1. Chọn nhãn và vẽ Bounding Box bao quanh đối tượng (Box Prompt)" size="5" style="margin-top: 10px; color: #2c3e50; font-weight: bold;"/>
-  <RectangleLabels name="bbox" toName="image" canRotate="false">
-    <Label value="Plant" background="#27ae60"/>
-    <Label value="Leaf" background="#2ecc71"/>
-    <Label value="Fruit" background="#e67e22"/>
-    <Label value="Disease" background="#e74c3c"/>
-    <Label value="Stem" background="#8e44ad"/>
-    <Label value="Car" background="#3498db"/>
-    <Label value="Person" background="#e91e63"/>
-    <Label value="Object" background="#95a5a6"/>
-  </RectangleLabels>
-
-  <!-- 2. Polygon sinh tự động từ SAM -->
-  <Header value="2. Viền đa giác (Polygon) sinh tự động từ SAM ML Backend" size="5" style="margin-top: 10px; color: #2c3e50; font-weight: bold;"/>
-  <PolygonLabels name="polygon" toName="image" strokeWidth="2" opacity="0.6" pointSize="small">
-    <Label value="Plant" background="#27ae60"/>
-    <Label value="Leaf" background="#2ecc71"/>
-    <Label value="Fruit" background="#e67e22"/>
-    <Label value="Disease" background="#e74c3c"/>
-    <Label value="Stem" background="#8e44ad"/>
-    <Label value="Car" background="#3498db"/>
-    <Label value="Person" background="#e91e63"/>
-    <Label value="Object" background="#95a5a6"/>
-  </PolygonLabels>
-</View>
+```bat
+set LABEL_STUDIO_DISABLE_SSRF_PROTECTION=true
+set USE_DEFAULT_BANNED_SUBNETS=false
+set ML_BLOCK_LOCAL_IP=false
+cd labeling
+label-studio start --port 19090 --data-dir ./data
 ```
-4. Bấm **Save**.
+
+**Trên Linux / macOS:**
+
+```bash
+export LABEL_STUDIO_DISABLE_SSRF_PROTECTION=true
+export USE_DEFAULT_BANNED_SUBNETS=false
+export ML_BLOCK_LOCAL_IP=false
+cd labeling
+label-studio start --port 19090 --data-dir ./data
+```
+
+Đăng nhập hệ thống qua trình duyệt: http://localhost:19090
 
 ---
 
-### Bước 2: Kết nối ML Backend vào Project
-1. Vào **Settings** -> **Machine Learning** -> bấm nút **Add Model**.
-2. Điền các thông tin:
-   * **Title**: `MobileSAM Interactive Backend`
-   * **URL**: `http://localhost:9090` (hoặc `http://127.0.0.1:9090`)
-   * **Interactive preannotations**: BẬT công tắc này (**Auto-Annotation**).
-3. Bấm **Validate and Save**.
-4. Trạng thái hiển thị badge xanh lá cây `Connected` là thành công!
+## 7. Cấu hình Access Token (Dành cho Auto-Provisioning)
+
+Để backend tự động nạp cấu hình giao diện XML và kết nối mô hình cổng 9090 vào mọi dự án mới:
+
+1. Đăng nhập vào web Label Studio (`http://localhost:19090`).
+2. Bấm vào **Avatar** ở góc trên cùng bên phải -> chọn **Account & Settings**.
+3. Sao chép chuỗi tại mục **Access Token**.
+4. Tạo file văn bản `token.txt` tại vị trí:
+   ```text
+   labeling/sam_backend/token.txt
+   ```
+5. Dán chuỗi token vừa copy vào file và lưu lại.
 
 ---
 
-## 7. Quy trình gán nhãn thực tế trên giao diện
+## 8. Hướng dẫn sử dụng
 
-1. Mở một Task bất kỳ trong Project.
-2. Bật công tắc **Auto-Annotation** ở góc phải màn hình gán nhãn.
-3. Chọn một nhãn từ nhóm **1. Bounding Box Prompt** (ví dụ: `Plant`, `Car`...).
-4. Dùng chuột kéo một khung chữ nhật bao quanh đối tượng cần phân đoạn.
-5. Ngay khi thả chuột:
-   * Box prompt được gửi đến ML Backend.
-   * SAM suy luận mặt nạ và tự động chuyển đổi thành đa giác **PolygonLabels**.
-   * Đường viền đa giác ôm sát từng chi tiết của đối tượng xuất hiện ngay lập tức trên ảnh.
-6. Người gán nhãn có thể kéo chỉnh sửa các điểm đỉnh của Polygon nếu muốn tinh chỉnh thêm trước khi bấm **Submit**.
+### 8.1. Gán nhãn tương tác (Interactive Segmentation)
+
+1. Mở một ảnh bất kỳ trong dự án.
+2. Bật công tắc **Auto-Annotation** ở thanh công cụ phía dưới ảnh.
+3. Chọn nhãn **Object** (hoặc nhãn loài có sẵn), dùng chuột kéo một **Bounding Box** bao quanh đối tượng cần phân đoạn.
+4. MobileSAM sẽ tự động tính toán và trả về đường viền đa giác **Polygon** ôm khít đối tượng.
+
+### 8.2. Xử lý hàng loạt từ file JSON (Batch Auto-Segment)
+
+1. Tại giao diện dự án, bấm **Import** và tải lên file JSON đã có sẵn các Bounding Box.
+2. Vào **Data Manager**, tích chọn các task cần xử lý.
+3. Chọn menu **Actions** -> bấm **Retrieve Predictions**.
+4. Backend sẽ tự động duyệt toàn bộ Bounding Box trong file JSON và chuyển đổi thành viền **Polygon** tương ứng.
 
 ---
 
-## 8. Tinh chỉnh nâng cao (Fine-tuning Hyperparameters)
+## 9. Cấu hình thủ công (Dự phòng nếu không dùng Auto-Provision)
 
-Các biến môi trường có thể cấu hình linh hoạt:
+Nếu muốn tự thiết lập cho một dự án riêng biệt:
 
-| Tên biến môi trường | Mặc định | Ý nghĩa |
-|---|---|---|
-| `APPROX_EPSILON` | `0.002` | Hệ số xấp xỉ Douglas-Peucker. Giá trị càng lớn số điểm đỉnh càng ít (tối ưu web mượt hơn), giá trị nhỏ hơn giúp viền cong mịn hơn. |
-| `MIN_CONTOUR_AREA` | `20.0` | Loại bỏ các đốm mask nhỏ hoặc nhiễu có diện tích nhỏ hơn ngưỡng này (pixel). |
-| `MODEL_TYPE` | `vit_t` | Kiến trúc mô hình (`vit_t` cho MobileSAM, `vit_b`, `vit_l`, `vit_h` cho SAM nguyên bản). |
-| `CHECKPOINT_PATH` | `weights/mobile_sam.pt` | Đường dẫn tệp trọng số tùy chỉnh. |
+1. **Giao diện nhãn:** Vào **Settings** -> **Labeling Interface** -> chọn **Code View** -> dán toàn bộ nội dung từ file `labeling/sam_backend/label_config.xml` -> bấm **Save**.
+2. **Kết nối Backend:** Vào **Settings** -> **Machine Learning** -> bấm **Add Model**:
+   - **URL:** `http://localhost:9090`
+   - **Interactive preannotations:** Bật công tắc
+   - Bấm **Validate and Save** (Trạng thái chuyển sang badge xanh `Connected` là thành công).
