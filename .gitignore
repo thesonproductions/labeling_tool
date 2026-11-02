@@ -41,10 +41,10 @@ Thumbs.db
 *.swp
 *.swo
 
-# MobileSAM Backend & Model weights
-*.pt
+# Model weights chung & Token
 *.pth
-weights/
-*/weights/
 token.txt
 */token.txt
+# Chặn các file .pt khác nhưng cho phép ngoại lệ file MobileSAM 39MB
+*.pt
+!labeling/sam_backend/weights/mobile_sam.pt
