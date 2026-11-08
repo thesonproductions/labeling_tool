@@ -32,7 +32,6 @@
   <Image name="image" value="$image" zoom="true" zoomBy="1.5" rotateControl="true"/>
 
   <!-- 2. Hàng nhãn: CỐ ĐỊNH MÃ MÀU XANH NGỌC #27ae60 -->
-  <Header value="Chọn nhãn rồi kéo Box để SAM tự bọc viền:" style="font-size: 15px; font-weight: 600; color: #2d3748; margin: 6px 0 3px 0;"/>
   <RectangleLabels name="label" toName="image" smart="true" canRotate="false" choice="single">
     
     <Label value="Object" background="#27ae60"/>

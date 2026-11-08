@@ -9,7 +9,7 @@ ML Backend tích hợp **MobileSAM** vào **Label Studio**, hỗ trợ tự đ�
 ## 1. Tính năng nổi bật
 
 1. **Interactive Segmentation (Box Prompt):** Kéo Bounding Box quanh đối tượng trên ảnh -> MobileSAM tự động suy luận Binary Mask và chuyển đổi thành viền đa giác Polygon ôm sát đối tượng.
-2. **Batch Auto-Segment từ JSON:** Đọc danh sách Bounding Box từ dữ liệu JSON import vào Label Studio và tự động tạo Polygon hàng loạt qua lệnh _Retrieve Predictions_.
+2. **Batch Auto-Segment từ JSON:** Đọc danh sách Bounding Box từ dữ liệu JSON import vào Label Studio và tự động tạo Polygon hàng loạt qua lệnh _Retrieve Predictions_ (hoặc xử lý trước qua `auto_segment_yolo.bat`).
 3. **Auto-Provisioning:** Tự động nạp cấu hình giao diện `label_config.xml`, kết nối ML Backend cổng 9090 và gán Webhook vào dự án mới qua Label Studio API.
 4. **Dynamic Labels:** Tiếp nhận tên nhãn mới linh hoạt thông qua ô nhập text và tự động đồng bộ vào danh sách nhãn.
 5. **LRU Embedding Cache:** Lưu trữ Image Embedding tạm thời trên RAM, giúp các thao tác vẽ box tiếp theo trên cùng một ảnh phản hồi tức thì (< 30ms).
@@ -50,18 +50,24 @@ sequenceDiagram
 
 ```text
 labeling/
-└── sam_backend/
-    ├── _sam_backend.py        # Backend chính (MobileSAM, Batch Inference, Cache, Webhook)
-    ├── _wsgi.py               # WSGI entrypoint chuẩn Label Studio ML
-    ├── label_config.xml       # Bản thiết kế giao diện XML chuẩn (Smart Box + Polygon)
-    ├── requirements.txt       # Danh sách thư viện phụ thuộc (Web + Backend AI)
-    ├── start_sam_backend.bat  # Script chạy 1-Click trên Windows
-    ├── start_sam_backend.sh   # Script chạy trên Linux/macOS
-    ├── test_backend.py        # Script kiểm thử offline & đo hiệu năng Cache
-    ├── token.txt              # Access Token kết nối Label Studio API (tạo cục bộ, không commit)
-    ├── weights/
-    │   └── mobile_sam.pt      # Trọng số MobileSAM (39 MB, tự tải nếu thiếu)
-    └── README.md              # Tài liệu hướng dẫn
+├── converters/
+│   ├── auto_segment_yolo.bat   # Bọc viền SAM hàng loạt offline từ thư mục YOLO
+│   ├── convert_yolo.bat        # Chuyển đổi YOLO sang JSON Label Studio chuẩn
+│   ├── yolo_converter.py       # Module xử lý tọa độ & mã hóa URL Local Storage
+│   └── yolo_to_sam_polygons.py # Engine MobileSAM chạy lô offline
+├── data/                       # Database SQLite, ảnh upload và dữ liệu export
+├── sam_backend/
+│   ├── _sam_backend.py         # Backend chính (MobileSAM, Batch Inference, Cache, Webhook)
+│   ├── _wsgi.py                # WSGI entrypoint chuẩn Label Studio ML
+│   ├── label_config.xml        # Bản thiết kế giao diện XML chuẩn (Smart Box + Polygon)
+│   ├── requirements.txt        # Danh sách thư viện phụ thuộc (Web + Backend AI)
+│   ├── start_sam_backend.bat   # Script chạy 1-Click trên Windows
+│   ├── start_sam_backend.sh    # Script chạy trên Linux/macOS
+│   ├── test_backend.py         # Script kiểm thử offline & đo hiệu năng Cache
+│   ├── token.txt               # Access Token kết nối Label Studio API (cục bộ)
+│   └── weights/
+│       └── mobile_sam.pt       # Trọng số MobileSAM (39 MB, tự động tải nếu thiếu)
+└── start_labelstudio.bat       # Script khởi chạy Label Studio mở khóa đọc file cục bộ
 ```
 
 > **Lưu ý bảo mật:** Không commit file `token.txt` lên GitHub. File này đã được đưa vào `.gitignore`.
@@ -136,9 +142,13 @@ Mở Terminal thứ 2 độc lập tại thư mục gốc `labeling_tool`:
 set LABEL_STUDIO_DISABLE_SSRF_PROTECTION=true
 set USE_DEFAULT_BANNED_SUBNETS=false
 set ML_BLOCK_LOCAL_IP=false
+set LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+set LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT=%SystemDrive%\
 cd labeling
 label-studio start --port 19090 --data-dir ./data
 ```
+
+_(Khuyên dùng: Nhấp đúp chạy trực tiếp file `labeling/start_labelstudio.bat`)_
 
 **Trên Linux / macOS:**
 
@@ -146,6 +156,8 @@ label-studio start --port 19090 --data-dir ./data
 export LABEL_STUDIO_DISABLE_SSRF_PROTECTION=true
 export USE_DEFAULT_BANNED_SUBNETS=false
 export ML_BLOCK_LOCAL_IP=false
+export LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+export LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT=/
 cd labeling
 label-studio start --port 19090 --data-dir ./data
 ```
@@ -175,15 +187,15 @@ label-studio start --port 19090 --data-dir ./data
 
 1. Mở một ảnh bất kỳ trong dự án.
 2. Bật công tắc **Auto-Annotation** ở thanh công cụ phía dưới ảnh.
-3. Chọn nhãn **Object** (hoặc nhãn loài có sẵn), dùng chuột kéo một **Bounding Box** bao quanh đối tượng cần phân đoạn.
-4. MobileSAM sẽ tự động tính toán và trả về đường viền đa giác **Polygon** ôm khít đối tượng.
+3. Chọn nhãn cần gán, dùng chuột kéo một **Bounding Box** (phím `R`) bao quanh đối tượng.
+4. MobileSAM sẽ tự động tính toán (< 30ms) và bọc viền đa giác **Polygon** ôm khít đối tượng.
 
 ### 8.2. Xử lý hàng loạt từ file JSON (Batch Auto-Segment)
 
-1. Tại giao diện dự án, bấm **Import** và tải lên file JSON đã có sẵn các Bounding Box.
+1. Tại giao diện dự án, bấm **Import** và tải lên file JSON có sẵn Bounding Box.
 2. Vào **Data Manager**, tích chọn các task cần xử lý.
 3. Chọn menu **Actions** -> bấm **Retrieve Predictions**.
-4. Backend sẽ tự động duyệt toàn bộ Bounding Box trong file JSON và chuyển đổi thành viền **Polygon** tương ứng.
+4. Backend sẽ tự động duyệt toàn bộ Bounding Box và chuyển đổi thành viền **Polygon** tương ứng.
 
 ---
 
@@ -196,3 +208,12 @@ Nếu muốn tự thiết lập cho một dự án riêng biệt:
    - **URL:** `http://localhost:9090`
    - **Interactive preannotations:** Bật công tắc
    - Bấm **Validate and Save** (Trạng thái chuyển sang badge xanh `Connected` là thành công).
+
+---
+
+## 10. Tinh chỉnh thuật toán & Tối ưu hóa (Advanced Tuning)
+
+Trong file `_sam_backend.py`, bạn có thể tùy chỉnh các hằng số:
+
+- `SIMPLIFY_EPSILON` (Mặc định `0.002`): Hệ số làm mượt viền Polygon (Ramer-Douglas-Peucker). Tăng lên nếu muốn giảm bớt số đỉnh polygon, giảm xuống nếu muốn viền chi tiết cực đại.
+- `MAX_CACHE_SIZE` (Mặc định `16`): Số lượng embedding ảnh lưu trong LRU Cache. Đảm bảo tốc độ vẽ tức thì trên máy ít RAM.

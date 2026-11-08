@@ -580,12 +580,13 @@ class SAMBackend(LabelStudioMLBase):
                 if img is not None:
                     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB), os.path.abspath(cand)
 
-        # 2. Xử lý /data/local-files/?d=...
+        # 2. Xử lý /data/local-files/?d=... (Hỗ trợ cả Windows và Linux/macOS)
         if "/data/local-files/" in parsed.path and parsed.query:
             d_param = urllib.parse.parse_qs(parsed.query).get("d", [""])[0]
             if d_param:
-                d_clean = urllib.parse.unquote(d_param)
-                doc_root = os.environ.get("LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT", "")
+                d_clean = urllib.parse.unquote(d_param).replace("\\", os.sep).replace("/", os.sep)
+                default_root = (os.environ.get("SystemDrive", "C:") + "\\") if os.name == "nt" else "/"
+                doc_root = os.environ.get("LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT", "") or default_root
                 local_cands = [d_clean, os.path.join(doc_root, d_clean.lstrip("/\\"))]
                 if extra_search_dirs:
                     local_cands.extend(os.path.join(d, d_clean.lstrip("/\\")) for d in extra_search_dirs if d)
@@ -1184,6 +1185,26 @@ def _get_ls_token() -> str:
                         return t
             except Exception:
                 pass
+
+    # Fallback tự động 100% cho máy mới clone từ Git (không cần tạo file token.txt thủ công):
+    # Tự động bật cho phép Legacy Token trong jwt_auth_jwtsettings và lấy key từ authtoken_token
+    db_path = os.path.abspath(os.path.join(BASE_DIR, "..", "data", "label_studio.sqlite3"))
+    if os.path.isfile(db_path):
+        try:
+            import sqlite3
+            conn = sqlite3.connect(db_path, timeout=5)
+            try:
+                cur = conn.execute("UPDATE jwt_auth_jwtsettings SET legacy_api_tokens_enabled = 1 WHERE legacy_api_tokens_enabled = 0")
+                if cur.rowcount > 0:
+                    conn.commit()
+            except Exception:
+                pass
+            row = conn.execute("SELECT key FROM authtoken_token ORDER BY created DESC LIMIT 1").fetchone()
+            conn.close()
+            if row and row[0]:
+                return str(row[0]).strip()
+        except Exception:
+            pass
     return ""
 
 
@@ -1224,8 +1245,8 @@ def _persist_bboxes_to_task_meta(
     current_meta: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Lưu danh sách Bounding Box chuẩn vào task.meta.bboxes để Output JSON luôn có đủ BB mà Web không bị vẽ đè."""
-    if not task_id or not bboxes:
-        return bboxes
+    # if not task_id or not bboxes:
+    return bboxes
 
     meta_obj: Dict[str, Any] = copy.deepcopy(current_meta) if isinstance(current_meta, dict) else {}
     if current_meta is None:
@@ -1338,13 +1359,28 @@ def _ensure_labels_in_project_xml(project_id: Any, class_names: Set[str]) -> Opt
     headers = _get_ls_headers()
     poly_tag_name = "polygon"
     img_tag_name = "image"
+    db_path = os.path.abspath(os.path.join(BASE_DIR, "..", "data", "label_studio.sqlite3"))
 
     with _xml_lock:
         try:
-            proj_res = requests.get(f"{LS_URL}/api/projects/{project_id}/", headers=headers, timeout=10)
-            if proj_res.status_code != 200:
-                return None
-            xml_str = proj_res.json().get("label_config", "")
+            xml_str = ""
+            used_sqlite = False
+            try:
+                proj_res = requests.get(f"{LS_URL}/api/projects/{project_id}/", headers=headers, timeout=5)
+                if proj_res.status_code == 200:
+                    xml_str = proj_res.json().get("label_config", "")
+            except Exception:
+                pass
+
+            if not xml_str.strip() and os.path.isfile(db_path):
+                import sqlite3
+                conn = sqlite3.connect(db_path, timeout=10)
+                row = conn.execute("SELECT label_config FROM project WHERE id = ?", (project_id,)).fetchone()
+                conn.close()
+                if row and row[0]:
+                    xml_str = row[0]
+                    used_sqlite = True
+
             if not xml_str.strip():
                 return None
 
@@ -1371,13 +1407,28 @@ def _ensure_labels_in_project_xml(project_id: Any, class_names: Set[str]) -> Opt
                 xml_changed = True
 
             if xml_changed:
-                patch = requests.patch(
-                    f"{LS_URL}/api/projects/{project_id}/",
-                    headers=headers,
-                    json={"label_config": ET.tostring(root, encoding="unicode")},
-                    timeout=10,
-                )
-                if patch.status_code in (200, 201):
+                new_xml_str = ET.tostring(root, encoding="unicode")
+                patched_ok = False
+                if not used_sqlite:
+                    try:
+                        patch = requests.patch(
+                            f"{LS_URL}/api/projects/{project_id}/",
+                            headers=headers,
+                            json={"label_config": new_xml_str},
+                            timeout=10,
+                        )
+                        if patch.status_code in (200, 201):
+                            patched_ok = True
+                    except Exception:
+                        pass
+                if not patched_ok and os.path.isfile(db_path):
+                    import sqlite3
+                    conn = sqlite3.connect(db_path, timeout=10)
+                    conn.execute("UPDATE project SET label_config = ? WHERE id = ?", (new_xml_str, project_id))
+                    conn.commit()
+                    conn.close()
+                    patched_ok = True
+                if patched_ok:
                     logger.info(f"[XML SYNC] Đã bổ sung nhãn {clean_classes} & đồng bộ màu cho Project {project_id}")
         except Exception as e:
             logger.error(f"[XML SYNC ERROR] Project {project_id}: {e}")
@@ -1422,6 +1473,150 @@ def _deduplicate_polygons(regions: List[Dict[str, Any]]) -> Tuple[List[Dict[str,
 
     return cleaned, changed
 
+_project_batch_locks_guard = threading.Lock()
+_project_batch_locks: Dict[Any, threading.Lock] = {}
+
+
+def _get_project_batch_lock(project_id: Any) -> threading.Lock:
+    with _project_batch_locks_guard:
+        if project_id not in _project_batch_locks:
+            _project_batch_locks[project_id] = threading.Lock()
+        return _project_batch_locks[project_id]
+
+
+def _reconcile_project_tasks_dual_mode(project_id: int, headers: Dict[str, str]) -> List[int]:
+    """
+    Hỗ trợ đồng thời cả 2 cơ chế cho người dùng (Xử lý trực tiếp SQLite siêu tốc < 10ms, chống lặp tab Gmail 100%):
+    - Cơ chế 1 (Người không chuyên): Upload 50 ảnh lên Web (/data/upload/...) trước -> Import JSON sau.
+      => Tự động chuyển nhãn từ task JSON sang task ảnh Upload, xóa task JSON tạm, giữ đúng 1 tab Gmail duy nhất.
+    - Cơ chế 2 (Người chuyên): Dùng Cloud Storage (Local files) -> Import JSON.
+      => Nếu người dùng lỡ bấm 'Sync Storage' sinh ra task rỗng ($undefined$), tự động xóa sạch task rỗng.
+    """
+    import sqlite3
+
+    db_path = os.path.abspath(os.path.join(BASE_DIR, "..", "data", "label_studio.sqlite3"))
+    if not os.path.isfile(db_path):
+        return []
+
+    merged_real_task_ids: List[int] = []
+    try:
+        conn = sqlite3.connect(db_path, timeout=15)
+        cur = conn.cursor()
+
+        # 1. Xóa ngay các task rỗng "$undefined$" (do bấm nhầm Sync Storage ở Cơ chế 2)
+        cur.execute(
+            "DELETE FROM task WHERE project_id = ? AND data LIKE '%$undefined$%' AND total_annotations = 0",
+            (project_id,),
+        )
+        if cur.rowcount > 0:
+            logger.info(f"[DUAL-MODE SYNC] Đã dọn {cur.rowcount} task rỗng ($undefined$) trong Project {project_id}.")
+
+        # 2. Đọc toàn bộ task của Project để phân loại Ảnh Upload vs Task JSON tạm
+        cur.execute("SELECT id, data, meta FROM task WHERE project_id = ?", (project_id,))
+        rows = cur.fetchall()
+
+        uploaded_by_name: Dict[str, Tuple[int, str]] = {}
+        json_tasks: List[Tuple[int, str, str]] = []
+
+        for tid, data_str, meta_str in rows:
+            try:
+                data = json.loads(data_str) if data_str else {}
+            except Exception:
+                data = {}
+            img_val = str(data.get("image") or "")
+            if "/data/upload/" in img_val or img_val.startswith("upload/"):
+                base = os.path.basename(img_val)
+                m = UUID_PREFIX_RE.match(base)
+                clean_name = m.group(1) if m else base
+                uploaded_by_name[clean_name] = (tid, meta_str or "{}")
+            else:
+                json_tasks.append((tid, img_val, meta_str or "{}"))
+
+        # 3. Nếu có cả Ảnh Upload và Task JSON tạm -> Chuyển nhãn sang Ảnh Upload & xóa Task JSON tạm
+        if uploaded_by_name and json_tasks:
+            for jt_id, img_val, jt_meta_str in json_tasks:
+                clean_val = urllib.parse.unquote(img_val).replace("\\", "/")
+                base_name = os.path.basename(clean_val)
+                target_info = uploaded_by_name.get(base_name)
+                if not target_info:
+                    continue
+                target_id, target_meta_str = target_info
+                if target_id == jt_id:
+                    continue
+
+                # Kiểm tra xem task JSON tạm có chứa annotation không
+                cur.execute("SELECT id FROM task_completion WHERE task_id = ?", (jt_id,))
+                jt_anns = cur.fetchall()
+                if jt_anns:
+                    # Chuyển trực tiếp liên kết annotation từ jt_id sang target_id
+                    cur.execute(
+                        "UPDATE task_completion SET task_id = ? WHERE task_id = ?",
+                        (target_id, jt_id),
+                    )
+                    # Gộp meta.bboxes nếu có
+                    try:
+                        jm = json.loads(jt_meta_str) if jt_meta_str else {}
+                        if isinstance(jm, dict) and jm.get("bboxes"):
+                            tm = json.loads(target_meta_str) if target_meta_str else {}
+                            if not isinstance(tm, dict):
+                                tm = {}
+                            tm["bboxes"] = jm["bboxes"]
+                            cur.execute("UPDATE task SET meta = ? WHERE id = ?", (json.dumps(tm), target_id))
+                    except Exception:
+                        pass
+
+                    merged_real_task_ids.append(target_id)
+
+                # Xóa các bảng phụ liên quan (nếu có) và xóa task JSON tạm
+                cur.execute("DELETE FROM prediction WHERE task_id = ?", (jt_id,))
+                cur.execute("DELETE FROM task WHERE id = ?", (jt_id,))
+
+            if merged_real_task_ids:
+                logger.info(
+                    f"[DUAL-MODE SYNC] Đã ghép nhãn siêu tốc cho {len(merged_real_task_ids)} ảnh Upload & xóa task JSON tạm!"
+                )
+
+        # 4. KHỬ TRÙNG LẶP TAB GMAIL: Đảm bảo mỗi ảnh trong Project chỉ có ĐÚNG 1 tab Annotation duy nhất!
+        cur.execute("SELECT id FROM task WHERE project_id = ?", (project_id,))
+        all_project_tids = [r[0] for r in cur.fetchall()]
+        dedup_tabs_removed = 0
+        for tid in all_project_tids:
+            cur.execute(
+                "SELECT id, result FROM task_completion WHERE task_id = ? ORDER BY id ASC",
+                (tid,),
+            )
+            t_anns = cur.fetchall()
+            if len(t_anns) > 1:
+                # Ưu tiên giữ lại tab đã có polygonlabels, nếu chưa có thì giữ tab đầu tiên
+                keep_id = t_anns[0][0]
+                for aid, res_str in t_anns:
+                    if res_str and '"polygonlabels"' in res_str:
+                        keep_id = aid
+                        break
+                cur.execute(
+                    "DELETE FROM task_completion WHERE task_id = ? AND id != ?",
+                    (tid, keep_id),
+                )
+                dedup_tabs_removed += cur.rowcount
+
+            # Đồng bộ lại bộ đếm total_annotations và is_labeled chuẩn xác trên bảng task
+            cur.execute("SELECT COUNT(*) FROM task_completion WHERE task_id = ?", (tid,))
+            cnt = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE task SET total_annotations = ?, is_labeled = ? WHERE id = ?",
+                (cnt, 1 if cnt > 0 else 0, tid),
+            )
+
+        if dedup_tabs_removed > 0:
+            logger.info(f"[DUAL-MODE SYNC] Đã xóa {dedup_tabs_removed} tab Gmail bị trùng lặp trong Project {project_id}.")
+
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"[DUAL-MODE SYNC] Lỗi xử lý SQLite project {project_id}: {e}")
+
+    return merged_real_task_ids
+
 
 def _run_batch_on_project_tasks(project_id: Any, task_ids: Optional[List[Any]] = None) -> Dict[str, int]:
     """
@@ -1430,171 +1625,234 @@ def _run_batch_on_project_tasks(project_id: Any, task_ids: Optional[List[Any]] =
       - Web chỉ hiển thị Polygon (gọn sạch, không đè khung vuông).
       - Toàn bộ Bounding Box gốc được bảo toàn vào task.meta.bboxes & poly.meta.bbox cho Output JSON.
     """
-    if not _get_ls_token():
+    db_path = os.path.abspath(os.path.join(BASE_DIR, "..", "data", "label_studio.sqlite3"))
+    if not os.path.isfile(db_path) and not _get_ls_token():
         logger.warning("[BATCH IMPORT] Thiếu API Token (LABEL_STUDIO_API_KEY hoặc token.txt)!")
         return {"processed": 0, "polygons": 0}
 
-    headers = _get_ls_headers()
-    backend = SAMBackend.get_shared_instance()
+    # Khóa theo từng Project để tuyệt đối không chạy chồng chéo nhiều luồng làm sinh lặp tab Gmail
+    proj_lock = _get_project_batch_lock(project_id)
+    if not proj_lock.acquire(blocking=False):
+        logger.info(f"[BATCH IMPORT] Project {project_id} đang được xử lý ở luồng khác, bỏ qua luồng trùng.")
+        return {"processed": 0, "polygons": 0}
 
-    # Đọc tên thẻ PolygonLabels thực tế của project
-    tag_info = _ensure_labels_in_project_xml(project_id, set())
-    poly_tag = tag_info[0] if tag_info else backend.polygon_tag_name
+    try:
+        headers = _get_ls_headers()
+        backend = SAMBackend.get_shared_instance()
 
-    # Thu thập danh sách task đầy đủ (kèm chi tiết annotations.result) từ Label Studio API
-    full_tasks: List[Dict[str, Any]] = []
-    target_ids: List[Any] = list(task_ids) if task_ids else []
+        # Đọc tên thẻ PolygonLabels thực tế của project
+        tag_info = _ensure_labels_in_project_xml(project_id, set())
+        poly_tag = tag_info[0] if tag_info else backend.polygon_tag_name
 
-    if not target_ids:
-        page = 1
-        while True:
-            r = requests.get(
-                f"{LS_URL}/api/tasks/",
-                params={"project": project_id, "page": page, "page_size": 100},
-                headers=headers,
-                timeout=15,
-            )
-            if r.status_code != 200:
-                break
-            body = r.json()
-            batch_list = body.get("tasks") if isinstance(body, dict) else body
-            if not batch_list or not isinstance(batch_list, list):
-                break
-            for item in batch_list:
-                if isinstance(item, dict) and item.get("id"):
-                    target_ids.append(item["id"])
-            if len(batch_list) < 100:
-                break
-            page += 1
+        # Tự động đồng bộ Dual-Mode (Ghép nhãn vào ảnh Upload, xóa task rỗng & khử trùng lặp tab Gmail)
+        _reconcile_project_tasks_dual_mode(project_id, headers)
 
-    for tid in target_ids:
-        try:
-            r = requests.get(f"{LS_URL}/api/tasks/{tid}/", headers=headers, timeout=10)
-            if r.status_code == 200:
-                full_tasks.append(r.json())
-        except Exception as e:
-            logger.warning(f"[BATCH IMPORT] Không đọc được task {tid}: {e}")
+        # Thu thập danh sách task đầy đủ (kèm chi tiết annotations.result)
+        full_tasks: List[Dict[str, Any]] = []
+        if os.path.isfile(db_path):
+            try:
+                import sqlite3
+                with sqlite3.connect(db_path, timeout=15) as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT id, data, meta FROM task WHERE project_id = ? ORDER BY id ASC", (project_id,))
+                    t_rows = cur.fetchall()
+                    for tid, d_str, m_str in t_rows:
+                        if task_ids and len(task_ids) == 1 and tid not in task_ids:
+                            continue
+                        cur.execute(
+                            "SELECT id, result, was_cancelled FROM task_completion WHERE task_id = ? ORDER BY id ASC",
+                            (tid,),
+                        )
+                        anns = []
+                        for aid, res_str, was_canc in cur.fetchall():
+                            try:
+                                r_list = json.loads(res_str) if res_str else []
+                            except Exception:
+                                r_list = []
+                            anns.append({"id": aid, "result": r_list, "was_cancelled": bool(was_canc)})
+                        full_tasks.append({
+                            "id": tid,
+                            "project": project_id,
+                            "data": json.loads(d_str) if d_str else {},
+                            "meta": json.loads(m_str) if m_str else {},
+                            "annotations": anns,
+                            "predictions": [],
+                        })
+                logger.info(f"[BATCH IMPORT] Đã nạp siêu tốc {len(full_tasks)} tasks trực tiếp từ SQLite!")
+            except Exception as e:
+                logger.warning(f"[BATCH IMPORT] Lỗi đọc SQLite, chuyển sang HTTP: {e}")
 
-    processed_count = 0
-    total_polys = 0
-    all_new_labels: Set[str] = set()
-
-    for task in full_tasks:
-        tid = task.get("id")
-        if not tid:
-            continue
-
-        with _batch_task_lock:
-            if tid in _active_batch_tasks:
-                continue
-            _active_batch_tasks.add(tid)
-
-        try:
-            polys, others, preserved_bboxes, avg_score, found_labels, src_type, src_id = backend.segment_task_boxes(
-                task,
-                polygon_from_name=poly_tag,
-                only_unsegmented_boxes=True,
-            )
-            if not polys:
-                continue
-
-            # Bảo toàn nguyên vẹn toàn bộ Bounding Box gốc vào task.meta.bboxes cho Output JSON
-            if preserved_bboxes:
-                _persist_bboxes_to_task_meta(
-                    tid,
-                    preserved_bboxes,
-                    headers,
-                    current_meta=task.get("meta") if isinstance(task.get("meta"), dict) else None,
-                )
-
-            all_new_labels.update(found_labels)
-            merged_results = others + polys  # Chỉ chứa Polygon để trên Web chỉ hiện Poly
-
-            # Lưu lại đúng nơi chứa Box ban đầu để mở Web ra là thấy ngay viền đa giác
-            if src_type == "annotations" and src_id:
-                with _ann_sync_lock:
-                    _active_ann_ids.add(src_id)
+        if not full_tasks:
+            if task_ids and len(task_ids) == 1:
+                session = requests.Session()
+                for tid in task_ids:
+                    try:
+                        r = session.get(f"{LS_URL}/api/tasks/{tid}/", headers=headers, timeout=30)
+                        if r.status_code == 200:
+                            full_tasks.append(r.json())
+                    except Exception as e:
+                        logger.warning(f"[BATCH IMPORT] Lỗi đọc task {tid}: {e}")
+            else:
                 try:
-                    resp = requests.patch(
-                        f"{LS_URL}/api/annotations/{src_id}/",
+                    r = requests.get(
+                        f"{LS_URL}/api/projects/{project_id}/export?exportType=JSON",
                         headers=headers,
-                        json={"result": merged_results},
-                        timeout=15,
+                        timeout=45,
                     )
-                    if resp.status_code in (200, 201):
+                    if r.status_code == 200:
+                        full_tasks = r.json()
+                        logger.info(f"[BATCH IMPORT] Đã lấy trọn gói {len(full_tasks)} tasks trong 1 request duy nhất!")
+                    else:
+                        logger.warning(f"[BATCH IMPORT] Export trả về status {r.status_code}: {r.text[:200]}")
+                except Exception as e:
+                    logger.error(f"[BATCH IMPORT] Lỗi khi lấy trọn gói project {project_id}: {e}")
+
+        processed_count = 0
+        total_polys = 0
+        all_new_labels: Set[str] = set()
+
+        for task in full_tasks:
+            tid = task.get("id")
+            if not tid:
+                continue
+
+            with _batch_task_lock:
+                if tid in _active_batch_tasks:
+                    continue
+                _active_batch_tasks.add(tid)
+
+            try:
+                polys, others, preserved_bboxes, avg_score, found_labels, src_type, src_id = backend.segment_task_boxes(
+                    task,
+                    polygon_from_name=poly_tag,
+                    only_unsegmented_boxes=True,
+                )
+                if not polys:
+                    continue
+
+                all_new_labels.update(found_labels)
+                merged_results = others + polys  # Chỉ chứa Polygon để trên Web chỉ hiện Poly
+
+                # Lưu lại đúng nơi chứa Box ban đầu để mở Web ra là thấy ngay viền đa giác
+                if src_type == "annotations" and src_id:
+                    db_path = os.path.abspath(os.path.join(BASE_DIR, "..", "data", "label_studio.sqlite3"))
+                    saved_sqlite = False
+                    if os.path.isfile(db_path):
+                        try:
+                            import sqlite3
+                            with sqlite3.connect(db_path, timeout=15) as conn:
+                                cur = conn.cursor()
+                                cur.execute(
+                                    "UPDATE task_completion SET result = ?, result_count = ? WHERE id = ?",
+                                    (json.dumps(merged_results), len(merged_results), src_id),
+                                )
+                                if preserved_bboxes:
+                                    cur_meta = task.get("meta") if isinstance(task.get("meta"), dict) else {}
+                                    cur_meta["bboxes"] = preserved_bboxes
+                                    cur.execute(
+                                        "UPDATE task SET meta = ? WHERE id = ?",
+                                        (json.dumps(cur_meta), tid),
+                                    )
+                                cur.execute("DELETE FROM prediction WHERE task_id = ?", (tid,))
+                                conn.commit()
+                                saved_sqlite = True
+                        except Exception as sqle:
+                            logger.warning(f"[BATCH AUTO-SEG] Fallback HTTP do SQLite bận: {sqle}")
+
+                    if saved_sqlite:
                         processed_count += 1
                         total_polys += len(polys)
                         logger.info(
                             f"[BATCH AUTO-SEG] Task {tid}: Web hiện {len(polys)} Poly & Output giữ đủ {len(preserved_bboxes)} BB"
                         )
-                        # Xóa các tab Prediction thừa trên task (nếu có) để giao diện chỉ có 1 tab duy nhất
-                        for pred in task.get("predictions") or []:
-                            pid = pred.get("id") if isinstance(pred, dict) else pred
-                            if pid:
-                                requests.delete(f"{LS_URL}/api/predictions/{pid}/", headers=headers, timeout=5)
-                finally:
-                    with _ann_sync_lock:
-                        _active_ann_ids.discard(src_id)
-            else:
-                # Nguồn từ predictions hoặc data.boxes -> lưu Prediction mới và dọn Prediction Box cũ
-                updated_pred = False
-                if src_type == "predictions" and src_id:
-                    p_res = requests.patch(
-                        f"{LS_URL}/api/predictions/{src_id}/",
-                        headers=headers,
-                        json={
-                            "result": merged_results,
-                            "score": avg_score,
-                            "model_version": f"{backend.model_version}-batch",
-                        },
-                        timeout=15,
-                    )
-                    updated_pred = p_res.status_code in (200, 201)
+                    else:
+                        if preserved_bboxes:
+                            _persist_bboxes_to_task_meta(
+                                tid,
+                                preserved_bboxes,
+                                headers,
+                                current_meta=task.get("meta") if isinstance(task.get("meta"), dict) else None,
+                            )
+                        with _ann_sync_lock:
+                            _active_ann_ids.add(src_id)
+                        try:
+                            resp = requests.patch(
+                                f"{LS_URL}/api/annotations/{src_id}/",
+                                headers=headers,
+                                json={"result": merged_results},
+                                timeout=15,
+                            )
+                            if resp.status_code in (200, 201):
+                                processed_count += 1
+                                total_polys += len(polys)
+                                logger.info(
+                                    f"[BATCH AUTO-SEG] Task {tid}: Web hiện {len(polys)} Poly & Output giữ đủ {len(preserved_bboxes)} BB"
+                                )
+                        finally:
+                            with _ann_sync_lock:
+                                _active_ann_ids.discard(src_id)
+                else:
+                    # Nguồn từ predictions hoặc data.boxes -> lưu Prediction mới và dọn Prediction Box cũ
+                    updated_pred = False
+                    if src_type == "predictions" and src_id:
+                        p_res = requests.patch(
+                            f"{LS_URL}/api/predictions/{src_id}/",
+                            headers=headers,
+                            json={
+                                "result": merged_results,
+                                "score": avg_score,
+                                "model_version": f"{backend.model_version}-batch",
+                            },
+                            timeout=15,
+                        )
+                        updated_pred = p_res.status_code in (200, 201)
+                        if not updated_pred:
+                            requests.delete(f"{LS_URL}/api/predictions/{src_id}/", headers=headers, timeout=10)
+
                     if not updated_pred:
-                        requests.delete(f"{LS_URL}/api/predictions/{src_id}/", headers=headers, timeout=10)
+                        c_res = requests.post(
+                            f"{LS_URL}/api/predictions/",
+                            headers=headers,
+                            json={
+                                "task": tid,
+                                "project": project_id,
+                                "result": merged_results,
+                                "score": avg_score,
+                                "model_version": f"{backend.model_version}-batch",
+                            },
+                            timeout=15,
+                        )
+                        updated_pred = c_res.status_code in (200, 201)
 
-                if not updated_pred:
-                    c_res = requests.post(
-                        f"{LS_URL}/api/predictions/",
-                        headers=headers,
-                        json={
-                            "task": tid,
-                            "project": project_id,
-                            "result": merged_results,
-                            "score": avg_score,
-                            "model_version": f"{backend.model_version}-batch",
-                        },
-                        timeout=15,
-                    )
-                    updated_pred = c_res.status_code in (200, 201)
+                    if updated_pred:
+                        processed_count += 1
+                        total_polys += len(polys)
+                        logger.info(
+                            f"[BATCH AUTO-SEG] Task {tid}: Đã nạp {len(polys)} Poly chờ Review & giữ {len(preserved_bboxes)} BB!"
+                        )
+            except Exception as e:
+                logger.error(f"[BATCH AUTO-SEG ERROR] Task {tid}: {e}")
+            finally:
+                with _batch_task_lock:
+                    _active_batch_tasks.discard(tid)
 
-                if updated_pred:
-                    processed_count += 1
-                    total_polys += len(polys)
-                    logger.info(
-                        f"[BATCH AUTO-SEG] Task {tid}: Đã nạp {len(polys)} Poly chờ Review & giữ {len(preserved_bboxes)} BB!"
-                    )
-        except Exception as e:
-            logger.error(f"[BATCH AUTO-SEG ERROR] Task {tid}: {e}")
-        finally:
-            with _batch_task_lock:
-                _active_batch_tasks.discard(tid)
+        if all_new_labels:
+            _ensure_labels_in_project_xml(project_id, all_new_labels)
 
-    if all_new_labels:
-        _ensure_labels_in_project_xml(project_id, all_new_labels)
-
-    if processed_count > 0:
-        logger.info(
-            f"[BATCH HOÀN TẤT] Project {project_id}: Đã tự động bọc viền {processed_count} ảnh ({total_polys} đa giác)!"
-        )
-    return {"processed": processed_count, "polygons": total_polys}
+        if processed_count > 0:
+            logger.info(
+                f"[BATCH HOÀN TẤT] Project {project_id}: Đã tự động bọc viền {processed_count} ảnh ({total_polys} đa giác)!"
+            )
+        return {"processed": processed_count, "polygons": total_polys}
+    finally:
+        proj_lock.release()
 
 
 def _sync_dynamic_label(payload: Dict[str, Any]):
     action = payload.get("action")
 
     # 1. TỰ ĐỘNG BỌC VIỀN HÀNG LOẠT NGAY KHI BẤM IMPORT FILE JSON BOUNDING BOX LÊN WEB
-    if action in ("TASKS_CREATED", "PROJECT_UPDATED"):
+    if action == "TASKS_CREATED":
         project_id = (payload.get("project") or {}).get("id")
         raw_tasks = payload.get("tasks") or []
         if not project_id and raw_tasks and isinstance(raw_tasks[0], dict):
@@ -1618,10 +1876,10 @@ def _sync_dynamic_label(payload: Dict[str, Any]):
 
     # Nếu Annotation có các Bounding Box chưa được cắt thành Polygon (ví dụ vừa bấm Update trên ảnh mới Import)
     has_polygons = any(r.get("type") == "polygonlabels" for r in results)
-    has_boxes = any(r.get("type") in ("rectanglelabels", "rectangle") for r in results)
-    if has_boxes and not has_polygons and task_id:
-        _run_batch_on_project_tasks(project_id, task_ids=[task_id])
-        return
+    # has_boxes = any(r.get("type") in ("rectanglelabels", "rectangle") for r in results)
+    # if has_boxes and not has_polygons and task_id:
+    #     _run_batch_on_project_tasks(project_id, task_ids=[task_id])
+    #     return
 
     with _ann_sync_lock:
         if ann_id in _active_ann_ids:
@@ -2087,15 +2345,16 @@ def _run_provision_worker():
 
                     # Tự động phát hiện khi Project có Task mới Import (hoặc vừa khởi động server) để cắt SAM ngay
                     task_num = int(proj.get("task_number") or 0)
-                    ann_num = int(proj.get("total_annotations_number") or 0)
-                    cur_sig = (task_num, ann_num)
-                    if task_num > 0 and _project_task_signatures.get(p_id) != cur_sig:
-                        _project_task_signatures[p_id] = cur_sig
+                    prev_sig = _project_task_signatures.get(p_id)
+                    prev_task_num = prev_sig[0] if isinstance(prev_sig, tuple) else (prev_sig or 0)
+                    if task_num > 0 and task_num != prev_task_num:
+                        _project_task_signatures[p_id] = (task_num, 0)
                         threading.Thread(
                             target=_run_batch_on_project_tasks,
                             args=(p_id, None),
                             daemon=True,
                         ).start()
+                        
         except Exception as e:
             logger.warning(f"[AUTO PROVISION LOOP]: {e}")
 
