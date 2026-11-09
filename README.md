@@ -12,7 +12,7 @@ Công cụ gán nhãn ảnh thông minh dựa trên **Label Studio** kết hợp
 
 ---
 
-### 🔑 Cấu hình API Token cho lần chạy đầu tiên (Chỉ làm 1 lần):
+### 🔑 Cấu hình API Token cho lần chạy đầu tiên (Chỉ làm 1 lần - Có thể làm hoặc không ):
 
 Khi mới tải dự án từ Git về, bạn cần cấp Token để SAM Backend giao tiếp được với Label Studio:
 
@@ -21,12 +21,14 @@ Khi mới tải dự án từ Git về, bạn cần cấp Token để SAM Backen
 3. Chọn mục **Access Token** (hoặc **Personal Access Token**) ➔ Copy chuỗi Token của bạn.
 4. Tạo một file tên là **`token.txt`** nằm trong thư mục **`labeling/sam_backend/token.txt`** (hoặc `labeling/token.txt`), dán mã Token vừa copy vào đó rồi lưu lại.
 
+> 🔑 **API Token:** Hệ thống đã tích hợp cơ chế tự động trích xuất Token từ database nội bộ ngay sau khi đăng nhập. Bạn không cần tạo file `token.txt` thủ công (chỉ cần tạo `token.txt` nếu bạn dùng database ngoài hoặc môi trường mạng đặc biệt).
+
 ## 🚀 Hướng Dẫn Sử Dụng Nhanh (Hỗ Trợ Cả Windows & Linux)
 
 ### 1. Khởi động công cụ
 
 - **Trên Windows (Chỉ cần click đúp chuột):**
-  1. Chạy `labeling/start_labelstudio.bat` (Mở Label Studio tại `http://localhost:19090`)
+  1. Chạy `labeling/start_labelstudio.bat` (Mở giao diện Web tại `http://localhost:19090`)
   2. Chạy `labeling/sam_backend/start_sam_backend.bat` (Mở MobileSAM AI Backend tại cổng `9090`)
 
 - **Trên Linux / macOS:**
@@ -36,7 +38,14 @@ Khi mới tải dự án từ Git về, bạn cần cấp Token để SAM Backen
   bash labeling/sam_backend/start_sam_backend.sh
   ```
 
-> 💡 **Kết nối AI vào Project mới:** Trong Project trên Web ➔ vào **Settings** ➔ **Model** ➔ **Connect Model** ➔ Điền URL `http://localhost:9090`, bật tích **Interactive preannotations** rồi bấm **Save**.
+> ⚡ **Kết nối AI Tự Động (Auto-Provisioning):**
+> MobileSAM Backend chạy ngầm sẽ **tự động kết nối 100%** vào bất kỳ Project mới nào bạn tạo trên Web (kèm đồng bộ bảng màu và kích hoạt chế độ Interactive). Bạn không cần phải thao tác cấu hình thủ công!
+>
+> 💡 **Lưu ý kiểm tra (Nếu cần):**
+> Trường hợp bạn lỡ tạo Project _trước_ khi khởi động file SAM Backend:
+>
+> - Hãy vào Project ➔ **Settings** ➔ **Model** để kiểm tra (thấy thẻ MobileSAM báo trạng thái xanh `Connected` là xong).
+> - Nếu chưa thấy, chỉ cần bấm **Connect Model** ➔ điền URL `http://localhost:9090`, tích chọn **Interactive preannotations** rồi bấm **Save**.
 
 ---
 
@@ -89,7 +98,7 @@ Bạn có thể chọn **1 trong 2 cách** dưới đây tùy theo nhu cầu:
 Nếu bạn muốn gán nhãn thêm các đối tượng mới hoặc chỉnh sửa trực tiếp trên Web:
 
 1. Mở bất kỳ ảnh nào trên giao diện Label Studio.
-2. Chọn nhãn cần gán ở danh sách nhãn (hoặc chọn `+ Nhập nhãn mới...` để tạo class mới tự động).
+2. Chọn nhãn cần gán ở danh sách nhãn .
 3. Chọn công cụ **Rectangle (Hình chữ nhật)** hoặc nhấn phím tắt `R`.
 4. **Kéo 1 khung chữ nhật bao quanh đối tượng:**
    - ⚡ MobileSAM Backend chạy ngầm (`< 30ms`) sẽ tự động phát hiện vật thể bên trong và bọc viền đa giác (**Polygon**) ôm khít đối tượng ngay lập tức!
