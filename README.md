@@ -78,7 +78,8 @@ Bạn có thể chọn **1 trong 2 cách** dưới đây tùy theo nhu cầu:
   - **Bước 3 (Import Settings & Preview):**
     👉 Tại ô **Import Method**, chuyển từ `Tasks` sang chọn **`Files`** _(Automatically creates a task for each storage object (e.g. JPG, MP3, TXT))_.
     _(Có thể bấm "Load Preview" để thấy trước danh sách ảnh)_ ➔ Bấm **Next**.
-  - **Bước 4 (Review & Confirm):** Bấm **Save Storage**.
+  - **Bước 4 (Review & Confirm):** Bấm Save Storage .
+  - **Bước 5:** Ra ngoài giao diện chính, bấm Import ➔ Kéo thả file yolo_import_label_studio.json vào. (Ảnh từ ổ cứng và nhãn sẽ tự động hiển thị cùng lúc!).
 
   > ⚠️ **LƯU Ý:** **KHÔNG cần bấm nút "Sync Storage"** nếu bạn dùng kèm file JSON nhãn (hệ thống sẽ tự đọc ảnh qua file JSON ở Bước 2 để tránh trùng lặp).
 
