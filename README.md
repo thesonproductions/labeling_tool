@@ -73,15 +73,14 @@ Bạn có thể chọn **1 trong 2 cách** dưới đây tùy theo nhu cầu:
 
 - **Bước 1 (Cấp quyền đọc thư mục ảnh trên ổ cứng):**
   - Mở Project ➔ **Settings** ➔ **Cloud Storage** ➔ **Add Source Storage**.
-  - Chọn **Storage Type: Local files**.
-  - Tại **Local path**, điền đường dẫn thư mục chứa ảnh (Ví dụ: `C:\Users\ten_may\Desktop\dataset\images`).
-  - Bấm **Save Storage**.
-    > ⚠️ **LƯU Ý:** **KHÔNG cần bấm nút "Sync Storage"** (nếu lỡ bấm sinh ra task rỗng `$undefined$`, hệ thống cũng sẽ tự động dọn sạch giúp bạn).
-- **Bước 2 (Nạp nhãn & Hiển thị ảnh):**
-  - Ra ngoài giao diện chính của Project, bấm **Import** ➔ Kéo thả duy nhất file **`yolo_import_label_studio.json`** vào.
-  - 👉 Toàn bộ ảnh từ ổ cứng sẽ hiển thị ngay kèm theo đa giác Polygon được MobileSAM cắt tự động!
+  - **Bước 1 (Select Provider):** Chọn **Local files**.
+  - **Bước 2 (Configure Connection):** Tại **Absolute local path**, điền đường dẫn thư mục ảnh (Ví dụ: `C:\Users\ten_may\Desktop\dataset\images`) ➔ Bấm **Next**.
+  - **Bước 3 (Import Settings & Preview):**
+    👉 Tại ô **Import Method**, chuyển từ `Tasks` sang chọn **`Files`** _(Automatically creates a task for each storage object (e.g. JPG, MP3, TXT))_.
+    _(Có thể bấm "Load Preview" để thấy trước danh sách ảnh)_ ➔ Bấm **Next**.
+  - **Bước 4 (Review & Confirm):** Bấm **Save Storage**.
 
----
+  > ⚠️ **LƯU Ý:** **KHÔNG cần bấm nút "Sync Storage"** nếu bạn dùng kèm file JSON nhãn (hệ thống sẽ tự đọc ảnh qua file JSON ở Bước 2 để tránh trùng lặp).
 
 ### 4. Xuất dữ liệu (Export về chuẩn YOLO Segmentation)
 
