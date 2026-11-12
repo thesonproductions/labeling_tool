@@ -1,10 +1,11 @@
 # Local data and credentials
-labeling/data/
-labeling/dynamic_labels/token.txt
 .env
 .env.*
 !.env.example
 !.env.sample
+labeling/data/*
+!labeling/data/.env
+labeling/dynamic_labels/token.txt
 *.sqlite3
 *.sqlite3-*
 *.sqlite3.backup*
@@ -40,3 +41,13 @@ build/
 Thumbs.db
 *.swp
 *.swo
+
+# Model weights chung & Token
+*.pth
+token.txt
+*/token.txt
+# Chặn các file .pt khác nhưng cho phép ngoại lệ file MobileSAM 39MB
+*.pt
+!labeling/sam_backend/weights/mobile_sam.pt
+
+*yolo_import_label_studio.json
