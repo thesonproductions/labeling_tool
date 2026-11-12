@@ -114,5 +114,18 @@ def ensure_sdk_converter_patched() -> None:
         print(f"[AUTO-PATCH] Bo qua cap nhat converter.py: {e}", file=sys.stderr)
 
 
-if __name__ == "__main__":
+def ensure_all_patches() -> None:
     ensure_sdk_converter_patched()
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        from patch_label_filter import ensure_label_filter_patched
+
+        ensure_label_filter_patched()
+    except Exception as e:
+        print(f"[AUTO-PATCH] Bo qua cap nhat Label Filter UI: {e}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    ensure_all_patches()
