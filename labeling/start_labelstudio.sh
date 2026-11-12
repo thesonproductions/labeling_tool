@@ -1,13 +1,16 @@
 #!/bin/bash
 
-# 1. Kích hoạt môi trường Conda (nếu có)
+# 1. Kích hoạt môi trường Conda (nếu có) hoặc .venv (nếu có)
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$DIR/.." && pwd)"
 if command -v conda &> /dev/null; then
     source "$(conda info --base)/etc/profile.d/conda.sh" 2>/dev/null
     conda activate labelstudio 2>/dev/null
+elif [ -f "$PROJECT_ROOT/.venv/bin/activate" ]; then
+    source "$PROJECT_ROOT/.venv/bin/activate"
 fi
 
-# 2. Lấy đường dẫn thư mục chứa script và nhảy vào đó
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 2. Nhảy vào thư mục chứa script
 cd "$DIR"
 
 # 2.5. Tự động kích hoạt bản vá Dual-Mode YOLO Export (kèm ảnh + tên file sạch) trên Linux/macOS

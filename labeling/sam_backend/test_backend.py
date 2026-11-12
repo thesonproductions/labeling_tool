@@ -7,7 +7,8 @@ import sys
 import time
 import json
 
-backend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "labeling", "sam_backend")
+backend_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(backend_dir, "..", ".."))
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
@@ -25,7 +26,7 @@ def run_test():
 
     # 2. Chuẩn bị ảnh test thực tế từ media/upload
     test_image_rel = os.path.join("labeling", "data", "media", "upload", "10", "499c9845-o-to.jpg")
-    test_image_abs = os.path.abspath(test_image_rel)
+    test_image_abs = os.path.join(project_root, test_image_rel)
 
     if not os.path.exists(test_image_abs):
         print(f"[ERROR] Không tìm thấy ảnh test tại: {test_image_abs}")
