@@ -5,23 +5,21 @@ Công cụ gán nhãn ảnh thông minh dựa trên **Label Studio** kết hợp
 ## Cấu trúc dự án
 
 - `labeling/sam_backend/`: MobileSAM ML Backend (tự động cắt viền Polygon `< 30ms`, đồng bộ nhãn động, hỗ trợ Dual-Mode Import).
-- `labeling/converters/`: Công cụ chuyển đổi dữ liệu YOLO ⇄ Label Studio JSON và tự động vá lỗi Export YOLO (`patch_sdk_converter.py`).
+- `labeling/converters/`: Công cụ chuyển đổi dữ liệu YOLO ⇄ Label Studio JSON, tự động vá lỗi Export YOLO (`patch_sdk_converter.py`) và tích hợp bộ lọc hiển thị nhãn trên giao diện gán nhãn (`label_filter_ui.js`, `patch_label_filter.py`).
 - `labeling/dynamic_labels/dynamic_labels.py`: Webhook xử lý nhãn động độc lập.
 - `labeling/start_labelstudio.bat` / `.sh`: Script khởi chạy tự động trên Windows và Linux.
 - `labeling/data/`: Database, ảnh upload và dữ liệu cấu hình cục bộ.
 
 ---
 
-### 🔑 Cấu hình API Token cho lần chạy đầu tiên (Chỉ làm 1 lần - Có thể làm hoặc không ):
+### 🔑 Cấu hình API Token cho lần chạy đầu tiên (Tùy chọn - Thường không cần làm)
 
-Khi mới tải dự án từ Git về, bạn cần cấp Token để SAM Backend giao tiếp được với Label Studio:
+> 🔑 **Tự động nhận Token:** Hệ thống đã tích hợp cơ chế tự động trích xuất Token từ database nội bộ ngay sau khi bạn đăng nhập trên Web. Bạn **không cần** tạo file `token.txt` thủ công (chỉ cần làm 4 bước dưới đây nếu bạn dùng database ngoài hoặc môi trường mạng đặc biệt):
 
 1. Mở Web Label Studio (`http://localhost:19090`), đăng nhập tài khoản của bạn.
 2. Bấm vào biểu tượng **Avatar góc trên bên phải** ➔ chọn **Account & Settings**.
 3. Chọn mục **Access Token** (hoặc **Personal Access Token**) ➔ Copy chuỗi Token của bạn.
 4. Tạo một file tên là **`token.txt`** nằm trong thư mục **`labeling/sam_backend/token.txt`** (hoặc `labeling/token.txt`), dán mã Token vừa copy vào đó rồi lưu lại.
-
-> 🔑 **API Token:** Hệ thống đã tích hợp cơ chế tự động trích xuất Token từ database nội bộ ngay sau khi đăng nhập. Bạn không cần tạo file `token.txt` thủ công (chỉ cần tạo `token.txt` nếu bạn dùng database ngoài hoặc môi trường mạng đặc biệt).
 
 ## 🚀 Hướng Dẫn Sử Dụng Nhanh (Hỗ Trợ Cả Windows & Linux)
 
@@ -78,8 +76,8 @@ Bạn có thể chọn **1 trong 2 cách** dưới đây tùy theo nhu cầu:
   - **Bước 3 (Import Settings & Preview):**
     👉 Tại ô **Import Method**, chuyển từ `Tasks` sang chọn **`Files`** _(Automatically creates a task for each storage object (e.g. JPG, MP3, TXT))_.
     _(Có thể bấm "Load Preview" để thấy trước danh sách ảnh)_ ➔ Bấm **Next**.
-  - **Bước 4 (Review & Confirm):** Bấm Save Storage .
-  - **Bước 5:** Ra ngoài giao diện chính, bấm Import ➔ Kéo thả file yolo_import_label_studio.json vào. (Ảnh từ ổ cứng và nhãn sẽ tự động hiển thị cùng lúc!).
+  - **Bước 4 (Review & Confirm):** Bấm **Save Storage**.
+  - **Bước 5:** Ra ngoài giao diện chính, bấm **Import** ➔ Kéo thả file `yolo_import_label_studio.json` vào. (Ảnh từ ổ cứng và nhãn sẽ tự động hiển thị cùng lúc!).
 
   > ⚠️ **LƯU Ý:** **KHÔNG cần bấm nút "Sync Storage"** nếu bạn dùng kèm file JSON nhãn (hệ thống sẽ tự đọc ảnh qua file JSON ở Bước 2 để tránh trùng lặp).
 
@@ -98,11 +96,19 @@ Bạn có thể chọn **1 trong 2 cách** dưới đây tùy theo nhu cầu:
 Nếu bạn muốn gán nhãn thêm các đối tượng mới hoặc chỉnh sửa trực tiếp trên Web:
 
 1. Mở bất kỳ ảnh nào trên giao diện Label Studio.
-2. Chọn nhãn cần gán ở danh sách nhãn .
+2. Chọn nhãn cần gán ở danh sách nhãn.
 3. Chọn công cụ **Rectangle (Hình chữ nhật)** hoặc nhấn phím tắt `R`.
 4. **Kéo 1 khung chữ nhật bao quanh đối tượng:**
    - ⚡ MobileSAM Backend chạy ngầm (`< 30ms`) sẽ tự động phát hiện vật thể bên trong và bọc viền đa giác (**Polygon**) ôm khít đối tượng ngay lập tức!
    - Không cần phải click chấm từng điểm thủ công bằng tay.
+
+### 🎯 Lọc hiển thị theo từng loài / nhãn (Label Filter)
+
+Khi ảnh có nhiều đối tượng đè lên nhau gây rối mắt, bạn có thể dùng **bảng lọc nhãn nổi** ngay trên giao diện gán nhãn để soi kỹ và sửa viền từng loài:
+
+- **Mặc định (`All`):** Hiển thị toàn bộ khung Box và đường viền Polygon của tất cả các loài trên ảnh.
+- **Lọc riêng từng loài:** Bỏ tích `All` và chỉ tích chọn các loài cần xem (hoặc bấm nút **Chỉ xem** cạnh tên loài đó) để tạm ẩn toàn bộ các loài khác.
+- Có thể kéo thả di chuyển vị trí bảng lọc hoặc thu gọn khi không cần dùng.
 
 ---
 
