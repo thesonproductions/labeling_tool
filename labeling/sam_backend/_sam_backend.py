@@ -107,6 +107,63 @@ def _bbox_metrics(
     return inter_area / union_area, inter_area / area2
 
 
+def _compute_polygon_area(region: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+    """Tính diện tích đa giác theo pixel^2 (area_px) và % diện tích ảnh (area_percent)."""
+    if not isinstance(region, dict) or region.get("type") != "polygonlabels":
+        return None
+    val = region.get("value")
+    if not isinstance(val, dict):
+        return None
+    pts = val.get("points")
+    if not isinstance(pts, (list, tuple)) or len(pts) < 3:
+        return None
+    try:
+        orig_w = float(region.get("original_width") or 0.0)
+        orig_h = float(region.get("original_height") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if orig_w <= 0.0 or orig_h <= 0.0:
+        return None
+
+    pts_px: List[Tuple[float, float]] = []
+    for pt in pts:
+        if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+            return None
+        try:
+            x_px = float(pt[0]) * orig_w / 100.0
+            y_px = float(pt[1]) * orig_h / 100.0
+        except (TypeError, ValueError):
+            return None
+        pts_px.append((x_px, y_px))
+
+    n = len(pts_px)
+    area2 = 0.0
+    for i in range(n):
+        x1, y1 = pts_px[i]
+        x2, y2 = pts_px[(i + 1) % n]
+        area2 += x1 * y2 - x2 * y1
+
+    area_px = round(0.5 * abs(area2), 2)
+    area_percent = round((area_px / (orig_w * orig_h)) * 100.0, 4)
+    return area_px, area_percent
+
+
+def _attach_polygon_area_meta(region: Dict[str, Any]) -> bool:
+    """Gắn `area_px` và `area_percent` vào `region['meta']`, trả về True nếu có thay đổi."""
+    computed = _compute_polygon_area(region)
+    if computed is None:
+        return False
+    area_px, area_percent = computed
+    cur_meta = region.get("meta") if isinstance(region.get("meta"), dict) else {}
+    if cur_meta.get("area_px") == area_px and cur_meta.get("area_percent") == area_percent:
+        return False
+    new_meta = dict(cur_meta)
+    new_meta["area_px"] = area_px
+    new_meta["area_percent"] = area_percent
+    region["meta"] = new_meta
+    return True
+
+
 def _find_best_matching_polygon(
     box_r: Dict[str, Any],
     poly_list: List[Dict[str, Any]],
@@ -774,6 +831,7 @@ class SAMBackend(LabelStudioMLBase):
             }
             if include_id:
                 item["id"] = uuid.uuid4().hex[:10]
+            _attach_polygon_area_meta(item)
             results.append(item)
 
         return results
@@ -985,6 +1043,7 @@ class SAMBackend(LabelStudioMLBase):
                             "bbox_id": std_box["id"],
                             "bbox": copy.deepcopy(std_box["value"]),
                         }
+                        _attach_polygon_area_meta(p)
                     polygon_results.extend(polys)
 
         avg_score = round(sum(scores_list) / len(scores_list), 4) if scores_list else 0.0
@@ -2044,6 +2103,10 @@ def _sync_dynamic_label(payload: Dict[str, Any]):
                 new_meta = dict(cur_p_meta)
                 new_meta["bbox_id"] = bbox_id
                 new_meta["bbox"] = bbox_val
+                area_info = _compute_polygon_area(r)
+                if area_info is not None:
+                    new_meta["area_px"] = area_info[0]
+                    new_meta["area_percent"] = area_info[1]
                 if r.get("meta") != new_meta:
                     r["meta"] = new_meta
                     changed = True
@@ -2058,6 +2121,9 @@ def _sync_dynamic_label(payload: Dict[str, Any]):
                     "image_rotation": r.get("image_rotation", 0),
                     "value": copy.deepcopy(bbox_val),
                 })
+            else:
+                if _attach_polygon_area_meta(r):
+                    changed = True
 
         if task_id and bboxes_to_persist:
             _persist_bboxes_to_task_meta(task_id, bboxes_to_persist, headers, current_meta=task_meta)
@@ -2473,6 +2539,8 @@ if __name__ == "__main__":
                 continue
             for ann in t.get("annotations") or []:
                 res_list = ann.get("result") or []
+                for r_item in res_list:
+                    _attach_polygon_area_meta(r_item)
                 existing_box_ids = {r.get("id") for r in res_list if r.get("type") == "rectanglelabels"}
                 extra_boxes = [b for b in meta_boxes if b.get("id") not in existing_box_ids]
                 ann["result"] = extra_boxes + res_list
