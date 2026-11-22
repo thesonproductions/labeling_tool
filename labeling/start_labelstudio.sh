@@ -26,9 +26,11 @@ export USE_DEFAULT_BANNED_SUBNETS=false
 export ML_BLOCK_LOCAL_IP=false
 
 # 4. MỞ KHÓA ĐỌC FILE CỤC BỘ (Tương ứng với file .bat)
+export LOCAL_FILES_SERVING_ENABLED=true
 export LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
-# Trên Linux/Mac, thư mục gốc là "/" để cho phép đọc ảnh ở mọi nơi trên máy
-export LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT="/"
+# Trên Linux/Mac, mặc định thư mục gốc là "/" (có thể ghi đè qua biến LOCAL_FILES_DOCUMENT_ROOT khi deploy)
+export LOCAL_FILES_DOCUMENT_ROOT="${LOCAL_FILES_DOCUMENT_ROOT:-/}"
+export LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT="${LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT:-$LOCAL_FILES_DOCUMENT_ROOT}"
 
 # 5. Chạy Label Studio
 exec label-studio start \

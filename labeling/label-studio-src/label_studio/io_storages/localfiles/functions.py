@@ -38,3 +38,20 @@ def normalize_storage_path(raw_path: str | None) -> str | None:
     collapsed = trimmed.replace('\\', os.sep)
     normalized = os.path.normpath(collapsed)
     return normalized
+
+
+def resolve_storage_path(raw_path: str | None, document_root: str | Path | None = None) -> str | None:
+    """Normalize a LocalFiles path and resolve relative paths against ``document_root``.
+
+    Absolute paths are preserved (normalized). Relative paths such as ``dataset1``
+    or ``Raw/images`` are joined onto ``document_root`` so users do not need to
+    know the server's absolute directory prefix.
+    """
+    normalized = normalize_storage_path(raw_path)
+    if not normalized or not document_root:
+        return normalized
+
+    if Path(normalized).is_absolute() or os.path.isabs(normalized):
+        return normalized
+
+    return os.path.normpath(os.path.join(str(document_root), normalized))
