@@ -18,7 +18,7 @@ Chạy riêng một file từ thư mục gốc repository:
 
 ```bash
 cd labeling/label-studio-src
-poetry install --no-root --only main,test
+poetry install --only main,test
 cd label_studio
 PYTHONPATH="$PWD/.." DJANGO_DB=sqlite poetry run python -m pytest tests/feature_checks/test_import_labels.py
 ```
