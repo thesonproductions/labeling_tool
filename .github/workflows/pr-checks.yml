@@ -34,6 +34,7 @@ jobs:
       - name: Run backend tests with SQLite
         env:
           LABEL_STUDIO_BASE_DATA_DIR: ${{ runner.temp }}/labeling-pr-data
+          PYTHONPATH: ${{ github.workspace }}/labeling/label-studio-src
         working-directory: labeling/label-studio-src/label_studio
         run: |
           poetry run python -m pytest -m 'not integration_tests' \

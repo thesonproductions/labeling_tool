@@ -20,7 +20,7 @@ Chạy riêng một file từ thư mục gốc repository:
 cd labeling/label-studio-src
 poetry install --no-root --only main,test
 cd label_studio
-DJANGO_DB=sqlite poetry run python -m pytest tests/feature_checks/test_import_labels.py
+PYTHONPATH="$PWD/.." DJANGO_DB=sqlite poetry run python -m pytest tests/feature_checks/test_import_labels.py
 ```
 
 Thay tên ví dụ bằng file test bạn vừa viết. Khi giao PR, đính kèm các trường
