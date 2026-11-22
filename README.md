@@ -4,8 +4,9 @@ Công cụ gán nhãn ảnh thông minh dựa trên **Label Studio** kết hợp
 
 ## Cấu trúc dự án
 
+- `labeling/label-studio-src/`: Mã nguồn Label Studio tùy biến (Docker / server), tích hợp sẵn API & giao diện **Import Folder** (`data_import/folder_import.py`, `core/static/js/import_folder_ui.js`) và **Bộ lọc hiển thị nhãn** (`core/static/js/label_filter_ui.js`).
 - `labeling/sam_backend/`: MobileSAM ML Backend (tự động cắt viền Polygon `< 30ms`, đồng bộ nhãn động, hỗ trợ Dual-Mode Import).
-- `labeling/converters/`: Công cụ chuyển đổi dữ liệu YOLO ⇄ Label Studio JSON, tự động vá lỗi Export YOLO (`patch_sdk_converter.py`) và tích hợp bộ lọc hiển thị nhãn trên giao diện gán nhãn (`label_filter_ui.js`, `patch_label_filter.py`).
+- `labeling/converters/`: Công cụ chuyển đổi dữ liệu YOLO ⇄ Label Studio JSON, tự động vá lỗi Export YOLO (`patch_sdk_converter.py`) và đồng bộ giao diện Import Folder + Bộ lọc nhãn cho bản chạy cục bộ (`patch_label_filter.py`).
 - `labeling/dynamic_labels/dynamic_labels.py`: Webhook xử lý nhãn động độc lập.
 - `labeling/start_labelstudio.bat` / `.sh`: Script khởi chạy tự động trên Windows và Linux.
 - `labeling/data/`: Database, ảnh upload và dữ liệu cấu hình cục bộ.
@@ -57,17 +58,27 @@ Công cụ gán nhãn ảnh thông minh dựa trên **Label Studio** kết hợp
 
 ---
 
-### 3. Nạp dữ liệu lên Web Label Studio (Hỗ trợ song song 2 Cơ Chế)
+### 3. Nạp dữ liệu lên Web Label Studio (Hỗ trợ 3 Cơ Chế)
 
-Bạn có thể chọn **1 trong 2 cách** dưới đây tùy theo nhu cầu:
+Bạn có thể chọn **1 trong 3 cách** dưới đây tùy theo nhu cầu:
 
-#### 🟢 Cách 1: Dành cho người mới / Tập ảnh vừa & nhỏ (Không cần cài Cloud Storage)
+#### ⭐ Cách 1 (Khuyến nghị — Hỗ trợ cả Local & Docker Server): Dùng nút **Import Folder** trực tiếp trên Web
+
+1. Ngoài giao diện quản lý dữ liệu của Project, bấm nút **Import Folder** (nằm ngay cạnh nút **Import**).
+2. **Kéo thả trực tiếp cả thư mục ảnh** hoặc **thư mục YOLO** (`images/` + `labels/*.txt` + `classes.txt`/`class.txt`) vào khung _(kéo thả giúp bỏ qua hộp thoại xác nhận của trình duyệt; hoặc bấm **Select Folder** để duyệt)_.
+3. Chọn chế độ nạp nhãn YOLO (nếu thư mục có `labels/`):
+   - **`Create Annotations (ready for SAM)`**: Tải ảnh kèm gắn sẵn Bounding Box thành Annotation chính thức.
+   - **`Create Predictions`**: Tải ảnh kèm khung dự đoán tham khảo (chưa Submit).
+   - **`Images only (ignore labels)`**: Chỉ tải ảnh gốc, bỏ qua file nhãn `.txt`.
+4. Bấm **Import**: Hệ thống tự chia nhỏ theo lô an toàn (tối đa 25 ảnh hoặc 50 MB/lô; tối đa 80 file nhãn/lô), lưu vào thư mục cố định `upload/<project_id>/folders/<tên_thư_mục>/`, hỗ trợ **2.000–5.000+ ảnh** và tự bỏ qua ảnh đã tồn tại (`Skip existing`) nếu cần tải tiếp khi rớt mạng.
+
+#### 🟢 Cách 2: Tập ảnh nhỏ bằng nút **Import** chuẩn + file JSON
 
 1. Ngoài giao diện chính của Project, bấm **Import** ➔ Kéo thả trực tiếp **các file ảnh** (`.jpg`, `.png`) vào trước ➔ Bấm **Import**.
 2. Tiếp tục bấm **Import** lần 2 ➔ Kéo thả file **`yolo_import_label_studio.json`** vào ➔ Bấm **Import**.
 3. ⚡ **Tự động hoàn toàn:** Hệ thống sẽ tự động ghép tọa độ nhãn từ file JSON vào đúng các ảnh vừa tải lên, tự xóa các dòng JSON tạm, giữ đúng 1 tab tài khoản duy nhất và kích hoạt MobileSAM cắt viền Polygon ôm sát vật thể! _(Sau vài giây, bấm **F5** để xem kết quả)._
 
-#### 🔵 Cách 2: Dành cho người chuyên / Tập dữ liệu lớn hàng ngàn ảnh (Dùng Local Storage)
+#### 🔵 Cách 3: Nạp qua Local Storage (khi ảnh đã nằm sẵn trên máy chủ chạy Label Studio)
 
 - **Bước 1 (Cấp quyền đọc thư mục ảnh trên ổ cứng):**
   - Mở Project ➔ **Settings** ➔ **Cloud Storage** ➔ **Add Source Storage**.
@@ -106,9 +117,9 @@ Nếu bạn muốn gán nhãn thêm các đối tượng mới hoặc chỉnh s�
 
 Khi ảnh có nhiều đối tượng đè lên nhau gây rối mắt, bạn có thể dùng **bảng lọc nhãn nổi** ngay trên giao diện gán nhãn để soi kỹ và sửa viền từng loài:
 
-- **Mặc định (`All`):** Hiển thị toàn bộ khung Box và đường viền Polygon của tất cả các loài trên ảnh.
-- **Lọc riêng từng loài:** Bỏ tích `All` và chỉ tích chọn các loài cần xem (hoặc bấm nút **Chỉ xem** cạnh tên loài đó) để tạm ẩn toàn bộ các loài khác.
-- Có thể kéo thả di chuyển vị trí bảng lọc hoặc thu gọn khi không cần dùng.
+- **Mặc định (`All`):** Hiển thị toàn bộ khung Box và đường viền Polygon của tất cả các loài trên ảnh, tự đẩy các loài có mặt trên ảnh lên đầu danh sách và tự động reset về `All` khi chuyển sang ảnh mới.
+- **Lọc riêng từng loài:** Bỏ tích `All` và chỉ tích chọn các loài cần xem (hoặc bấm nút **Chỉ xem** cạnh tên loài đó) để tạm ẩn toàn bộ các loài khác; các vùng mới vẽ hoặc vừa đổi nhãn sẽ tự được giữ hiển thị để không bị biến mất.
+- Hoạt động đồng bộ trên cả **Windows, Linux và Docker server**; có thể kéo thả di chuyển vị trí bảng lọc hoặc thu gọn khi không cần dùng.
 
 ---
 

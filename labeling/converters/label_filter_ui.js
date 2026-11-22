@@ -21,6 +21,7 @@
     collapsed: localStorage.getItem(STORAGE_COLLAPSED_KEY) === "1",
     lastSignature: "",
     lastTaskKey: "",
+    regionLabelMap: {},
     knownLabels: [], // [{ name, color, count }]
     totalCount: 0,
     dragging: false,
@@ -63,6 +64,7 @@
       "#ls-label-filter-panel.is-collapsed {",
       "  width: auto;",
       "  min-width: 170px;",
+      "  max-width: 280px;",
       "}",
       "#ls-label-filter-header {",
       "  display: flex;",
@@ -88,6 +90,9 @@
       "  gap: 6px;",
       "  font-size: 12.5px;",
       "  white-space: nowrap;",
+      "  min-width: 0;",
+      "  flex: 1;",
+      "  overflow: hidden;",
       "}",
       ".lsf-flt-badge {",
       "  font-size: 11px;",
@@ -96,6 +101,11 @@
       "  border-radius: 999px;",
       "  background: #e5e7eb;",
       "  color: #374151;",
+      "  max-width: 145px;",
+      "  overflow: hidden;",
+      "  text-overflow: ellipsis;",
+      "  white-space: nowrap;",
+      "  display: inline-block;",
       "}",
       "[data-color-scheme='dark'] .lsf-flt-badge {",
       "  background: #374151;",
@@ -484,43 +494,56 @@
     } catch (e) {}
 
     var sigParts = [];
+    var regionLabelMap = {};
+    var regionLabelsById = {};
     for (var rIdx = 0; rIdx < regions.length; rIdx++) {
       var r = regions[rIdx];
+      var rid = String((r && r.id) || ("idx_" + rIdx));
       var lbls = getRegionLabels(r);
       var col = getRegionColor(r);
       var rIsRect = isRectRegion(r);
       var rIsPoly = isPolyRegion(r);
-      sigParts.push((r.id || rIdx) + ":" + lbls.join(","));
-
+      var cleanLbls = [];
       for (var lIdx = 0; lIdx < lbls.length; lIdx++) {
-        var meta = ensureMeta(String(lbls[lIdx]), col);
+        var lblName = String(lbls[lIdx]);
+        var meta = ensureMeta(lblName, col);
         if (!meta) continue;
+        cleanLbls.push(lblName);
         if (rIsRect) meta.rects += 1;
         else if (rIsPoly) meta.polys += 1;
         else meta.others += 1;
       }
+      var lblKey = cleanLbls.join(",");
+      regionLabelMap[rid] = lblKey;
+      regionLabelsById[rid] = cleanLbls;
+      sigParts.push(rid + ":" + lblKey);
     }
 
     // Ẩn nhãn mặc định "Object" nếu dự án đã có nhãn loài thực tế và "Object" không có vùng nào
     var hasNonObject = orderedNames.some(function (n) { return n !== "Object"; });
-    var result = [];
+    var activeItems = [];
+    var zeroItems = [];
     var totalObjects = 0;
     for (var k = 0; k < orderedNames.length; k++) {
       var name = orderedNames[k];
       var item = metaMap[name];
-      var count = (item.rects > 0 || item.polys > 0)
-        ? Math.max(item.rects, item.polys)
-        : item.others;
+      var count = Math.max(item.rects, item.polys) + item.others;
       if (name === "Object" && hasNonObject && count === 0) {
         continue;
       }
       totalObjects += count;
-      result.push({
+      var entry = {
         name: name,
         color: item.color,
         count: count
-      });
+      };
+      if (count > 0) {
+        activeItems.push(entry);
+      } else {
+        zeroItems.push(entry);
+      }
     }
+    var result = activeItems.concat(zeroItems);
 
     var taskKey = "";
     try {
@@ -531,6 +554,8 @@
       labels: result,
       totalCount: totalObjects,
       taskKey: taskKey,
+      regionLabelMap: regionLabelMap,
+      regionLabelsById: regionLabelsById,
       signature: taskKey + "|" + orderedNames.join(",") + "|" + regions.length + "|" + sigParts.join(";")
     };
   }
@@ -561,6 +586,7 @@
       }
       badgeEl.classList.add("is-filtered");
     }
+    badgeEl.title = badgeEl.textContent;
 
     listEl.innerHTML = "";
     if (!items.length) {
@@ -678,14 +704,26 @@
       var shouldHide = false;
       if (state.mode !== "all") {
         var lbls = getRegionLabels(r);
-        var matched = false;
+        var validLbls = [];
         for (var j = 0; j < lbls.length; j++) {
-          if (state.selected.has(String(lbls[j]))) {
-            matched = true;
-            break;
+          var lblName = String(lbls[j]);
+          if (lblName && !SENTINEL_LABELS[lblName]) {
+            validLbls.push(lblName);
           }
         }
-        shouldHide = !matched;
+        // Không ẩn các vùng chưa gắn nhãn (vừa mới vẽ)
+        if (validLbls.length === 0) {
+          shouldHide = false;
+        } else {
+          var matched = false;
+          for (var m = 0; m < validLbls.length; m++) {
+            if (state.selected.has(validLbls[m])) {
+              matched = true;
+              break;
+            }
+          }
+          shouldHide = !matched;
+        }
       }
 
       if (Boolean(r.hidden) !== shouldHide) {
@@ -702,6 +740,11 @@
       if (rootEl) {
         rootEl.style.display = "none";
       }
+      if (!/[?&]task=\d+/.test(String(window.location.search || ""))) {
+        state.lastTaskKey = "";
+        state.lastSignature = "";
+        state.regionLabelMap = {};
+      }
       return;
     }
 
@@ -712,21 +755,54 @@
     var info = collectLabelsInfo(ctx);
     if (info.signature !== state.lastSignature) {
       var isNewTask = info.taskKey !== state.lastTaskKey;
-      state.lastSignature = info.signature;
-      state.lastTaskKey = info.taskKey;
-      state.knownLabels = info.labels;
-      state.totalCount = info.totalCount;
+      var prevRegionLabelMap = state.regionLabelMap || {};
+      var forceSyncAll = false;
 
-      if (state.mode === "all") {
+      if (isNewTask) {
+        // Khi mở ảnh / annotation mới: tự động reset về All để không bị ẩn nhầm nhãn của ảnh mới
+        state.mode = "all";
         state.selected = new Set(
           info.labels.map(function (it) { return it.name; })
         );
+        forceSyncAll = true;
+      } else if (state.mode === "all") {
+        state.selected = new Set(
+          info.labels.map(function (it) { return it.name; })
+        );
+      } else {
+        // Đang ở chế độ lọc (custom) trên cùng 1 ảnh: nếu người dùng vừa vẽ thêm vùng mới
+        // hoặc đổi nhãn của 1 vùng, tự động bật nhãn đó để vùng vừa thao tác không bị biến mất
+        var regionIds = Object.keys(info.regionLabelsById);
+        for (var idx = 0; idx < regionIds.length; idx++) {
+          var rid = regionIds[idx];
+          var isAddedOrRelabeled =
+            !Object.prototype.hasOwnProperty.call(prevRegionLabelMap, rid) ||
+            prevRegionLabelMap[rid] !== info.regionLabelMap[rid];
+          if (isAddedOrRelabeled) {
+            var newLbls = info.regionLabelsById[rid] || [];
+            for (var nIdx = 0; nIdx < newLbls.length; nIdx++) {
+              state.selected.add(newLbls[nIdx]);
+            }
+          }
+        }
+        if (
+          info.labels.length > 0 &&
+          info.labels.every(function (it) { return state.selected.has(it.name); })
+        ) {
+          state.mode = "all";
+          forceSyncAll = true;
+        }
       }
 
+      state.lastSignature = info.signature;
+      state.lastTaskKey = info.taskKey;
+      state.regionLabelMap = info.regionLabelMap;
+      state.knownLabels = info.labels;
+      state.totalCount = info.totalCount;
+
       renderCheckboxList();
-      // Khi vừa mở task mới ở chế độ lọc, hoặc có region mới xuất hiện, ép lại bộ lọc hiển thị
-      if (state.mode !== "all" || isNewTask) {
-        applyVisibilityFilter(state.mode !== "all");
+      if (state.mode !== "all" || forceSyncAll) {
+        applyVisibilityFilter(true);
       }
     }
   }
