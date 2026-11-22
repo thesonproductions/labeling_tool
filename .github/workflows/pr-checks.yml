@@ -35,4 +35,9 @@ jobs:
         env:
           LABEL_STUDIO_BASE_DATA_DIR: ${{ runner.temp }}/labeling-pr-data
         working-directory: labeling/label-studio-src/label_studio
-        run: poetry run python -m pytest -m 'not integration_tests' tests/test_project_validation.py tests/test_annotations_result_count.py tests/test_predictions.py
+        run: |
+          poetry run python -m pytest -m 'not integration_tests' \
+            tests/test_project_validation.py \
+            tests/test_annotations_result_count.py \
+            tests/test_predictions.py \
+            tests/feature_checks
