@@ -17,7 +17,6 @@ jobs:
         working-directory: labeling/label-studio-src
     env:
       DJANGO_DB: sqlite
-      LABEL_STUDIO_BASE_DATA_DIR: ${{ runner.temp }}/labeling-pr-data
       POETRY_VIRTUALENVS_IN_PROJECT: "true"
     steps:
       - uses: actions/checkout@v6
@@ -33,5 +32,7 @@ jobs:
           python -m pip install poetry==2.3.2
           poetry install --no-root --only main,test
       - name: Run backend tests with SQLite
+        env:
+          LABEL_STUDIO_BASE_DATA_DIR: ${{ runner.temp }}/labeling-pr-data
         working-directory: labeling/label-studio-src/label_studio
         run: poetry run python -m pytest -m 'not integration_tests' tests/test_project_validation.py tests/test_annotations_result_count.py tests/test_predictions.py
