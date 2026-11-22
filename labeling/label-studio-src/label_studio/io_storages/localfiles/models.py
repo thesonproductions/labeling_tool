@@ -22,7 +22,7 @@ from io_storages.base_models import (
     ImportStorageLink,
     ProjectStorageMixin,
 )
-from io_storages.localfiles.functions import normalize_storage_path
+from io_storages.localfiles.functions import normalize_storage_path, resolve_storage_path
 from io_storages.utils import StorageObject, load_tasks_json
 from tasks.models import Annotation
 
@@ -46,11 +46,11 @@ class LocalFilesMixin(models.Model):
     def clean(self):
         super().clean()
         if self.path is not None:
-            self.path = normalize_storage_path(self.path)
+            self.path = resolve_storage_path(self.path, settings.LOCAL_FILES_DOCUMENT_ROOT)
 
     def save(self, *args, **kwargs):
         if self.path is not None:
-            self.path = normalize_storage_path(self.path)
+            self.path = resolve_storage_path(self.path, settings.LOCAL_FILES_DOCUMENT_ROOT)
         super().save(*args, **kwargs)
 
     def _get_storage_path_or_raise(self, exception_cls=ValueError) -> str:
@@ -62,7 +62,7 @@ class LocalFilesMixin(models.Model):
         class (ValidationError vs ValueError) should be raised when the path is
         missing or invalid.
         """
-        normalized = normalize_storage_path(self.path)
+        normalized = resolve_storage_path(self.path, settings.LOCAL_FILES_DOCUMENT_ROOT)
         if not normalized:
             raise exception_cls('Path must be set for Local Files storage')
         return normalized
@@ -79,8 +79,8 @@ class LocalFilesMixin(models.Model):
     def validate_connection(self):
         normalized_path = self._get_storage_path_or_raise(ValidationError)
         self.path = normalized_path
-        path = Path(normalized_path)
-        document_root = Path(settings.LOCAL_FILES_DOCUMENT_ROOT)
+        path = Path(normalized_path).resolve()
+        document_root = Path(settings.LOCAL_FILES_DOCUMENT_ROOT).resolve()
         example_path = Path(settings.LOCAL_FILES_DOCUMENT_ROOT) / 'dataset1'
 
         if not path.exists():

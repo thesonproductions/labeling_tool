@@ -43,6 +43,8 @@ class LocalFilesImportStorageSerializer(ImportStorageSerializer):
             raise DRFValidationError(_stringify_detail(detail))
         except Exception as exc:
             raise DRFValidationError(extract_message(exc))
+        if 'path' in data and storage.path:
+            data['path'] = storage.path
         return data
 
 
@@ -66,4 +68,6 @@ class LocalFilesExportStorageSerializer(ExportStorageSerializer):
             raise DRFValidationError(_stringify_detail(detail))
         except Exception as exc:
             raise DRFValidationError(extract_message(exc))
+        if 'path' in data and storage.path:
+            data['path'] = storage.path
         return data
