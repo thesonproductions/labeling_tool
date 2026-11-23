@@ -6,6 +6,7 @@ from data_import.folder_import import _extract_safe_filename
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
 from PIL import Image
+from projects.models import Project
 from rest_framework.exceptions import ValidationError
 from tasks.models import Annotation, Prediction, Task
 
@@ -243,3 +244,85 @@ def test_import_folder_blocks_path_traversal_and_unauthenticated(business_client
     )
     assert unauth.status_code in (401, 403), unauth.content
     assert Task.objects.filter(project_id=project_id).count() == 0
+
+
+@pytest.mark.django_db
+def test_uploaded_file_thumbnail_and_http_caching(business_client):
+    project_id = _create_detection_project(business_client, title='Thumbnail & Cache Check')
+    large_img_bytes = _make_jpeg_bytes(size=(1200, 900))
+
+    resp = business_client.post(
+        f'/api/projects/{project_id}/import-folder',
+        data={
+            'mode': 'images',
+            'folder_name': 'Thumb_Set',
+            'files': [SimpleUploadedFile('dish_01.jpg', large_img_bytes, content_type='image/jpeg')],
+        },
+    )
+    assert resp.status_code == 201, resp.content
+    img_url = f'/data/upload/{project_id}/folders/Thumb_Set/dish_01.jpg'
+
+    # Full image includes private Cache-Control & ETag, and supports 304 Not Modified
+    full_resp = business_client.get(img_url)
+    assert full_resp.status_code == 200
+    assert full_resp['Cache-Control'] == 'private, max-age=86400'
+    full_etag = full_resp['ETag']
+    assert full_etag
+
+    full_304 = business_client.get(img_url, HTTP_IF_NONE_MATCH=full_etag)
+    assert full_304.status_code == 304
+    assert full_304['ETag'] == full_etag
+
+    # Thumbnail request returns resized JPEG <= requested width with its own ETag
+    thumb_resp = business_client.get(f'{img_url}?thumb=1&w=160')
+    assert thumb_resp.status_code == 200
+    assert thumb_resp['Content-Type'] == 'image/jpeg'
+    assert thumb_resp['Cache-Control'] == 'private, max-age=86400'
+    thumb_etag = thumb_resp['ETag']
+    assert thumb_etag and thumb_etag != full_etag
+
+    thumb_bytes = b''.join(thumb_resp.streaming_content)
+    with Image.open(io.BytesIO(thumb_bytes)) as thumb_im:
+        assert max(thumb_im.size) <= 160
+
+    thumb_304 = business_client.get(f'{img_url}?thumb=1&w=160', HTTP_IF_NONE_MATCH=thumb_etag)
+    assert thumb_304.status_code == 304
+    assert thumb_304['ETag'] == thumb_etag
+
+
+@pytest.mark.django_db
+def test_import_folder_yolo_meta_syncs_missing_classes_to_label_config(business_client):
+    project_id = _create_detection_project(business_client, title='Sync Classes Check')
+    classes_text = 'Rầy nâu\nPhilonthus\nBọ cánh cứng Lithocharodes longicollis\nBọ nước Hydrophilus spp.\n'
+    classes_file = SimpleUploadedFile('classes.txt', classes_text.encode('utf-8'), content_type='text/plain')
+
+    meta_resp = business_client.post(
+        f'/api/projects/{project_id}/import-folder',
+        data={
+            'mode': 'yolo_meta',
+            'folder_name': 'Raw_Sync',
+            'classes': classes_file,
+        },
+    )
+    assert meta_resp.status_code == 200, meta_resp.content
+    payload = meta_resp.json()
+    assert payload['classes_count'] == 4
+    assert payload['labels_synced'] == 2
+
+    project = Project.objects.get(pk=project_id)
+    assert 'Bọ cánh cứng Lithocharodes longicollis' in project.label_config
+    assert 'Bọ nước Hydrophilus spp.' in project.label_config
+    assert project.label_config.count('value="Rầy nâu"') == 1
+
+    # Re-sending identical classes.txt is idempotent (0 newly synced)
+    classes_file_2 = SimpleUploadedFile('classes.txt', classes_text.encode('utf-8'), content_type='text/plain')
+    meta_resp_2 = business_client.post(
+        f'/api/projects/{project_id}/import-folder',
+        data={
+            'mode': 'yolo_meta',
+            'folder_name': 'Raw_Sync',
+            'classes': classes_file_2,
+        },
+    )
+    assert meta_resp_2.status_code == 200, meta_resp_2.content
+    assert meta_resp_2.json()['labels_synced'] == 0

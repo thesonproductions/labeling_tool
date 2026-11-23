@@ -561,10 +561,10 @@
     var classesFile = null;
     var nonImageSkipped = 0;
 
-    // Detect if there is an images/ subfolder (YOLO layout)
+    // Detect if there is an images/ or image/ subfolder (YOLO layout)
     var hasImagesSubdir = files.some(function (f) {
       var rel = getRelativePath(f).toLowerCase();
-      return /(?:^|\/)images\/[^/]+$/.test(rel);
+      return /(?:^|\/)images?\/[^/]+$/.test(rel);
     });
 
     for (var i = 0; i < files.length; i++) {
@@ -581,15 +581,15 @@
         continue;
       }
 
-      if (ext === ".txt" && /(?:^|\/)labels\/[^/]+\.txt$/.test(relLower)) {
+      if (ext === ".txt" && /(?:^|\/)labels?\/[^/]+\.txt$/.test(relLower)) {
         labelFiles.push(f);
         labelStemSet[getStem(baseLower)] = true;
         continue;
       }
 
       if (IMAGE_EXTS[ext]) {
-        // If YOLO images/ subdir exists, only import images inside images/ to avoid duplicate thumbs
-        if (hasImagesSubdir && !/(?:^|\/)images\/[^/]+$/.test(relLower)) {
+        // If YOLO images/ or image/ subdir exists, only import images inside it to avoid duplicate thumbs
+        if (hasImagesSubdir && !/(?:^|\/)images?\/[^/]+$/.test(relLower)) {
           nonImageSkipped += 1;
           continue;
         }
