@@ -23,6 +23,11 @@ def test_label_filter_static_asset_and_base_template_wired():
     assert 'nonce="{{request.csp_nonce}}"' in html
     assert 'LABEL_FILTER_UI_START' not in html
 
+    js_text = static_js.read_text(encoding='utf-8')
+    assert 'white-space: normal;' in js_text
+    assert 'word-break: break-word;' in js_text
+    assert 'display: none;' in js_text
+
 
 def test_patch_label_filter_skips_duplicate_when_static_tag_present(tmp_path, monkeypatch):
     import sys

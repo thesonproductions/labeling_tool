@@ -9,11 +9,13 @@ Files are saved to a fixed directory per project and folder name:
 and served natively through Label Studio's authenticated `/data/upload/...` endpoint.
 """
 
+import hashlib
 import io
 import logging
 import os
 import re
 import uuid
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -193,6 +195,65 @@ def _parse_yolo_label_file(
     return regions
 
 
+_LABEL_COLOR_PALETTE = (
+    '#27AE60', '#2980B9', '#E67E22', '#8E44AD', '#E74C3C', '#16A085',
+    '#D35400', '#2C3E50', '#C0392B', '#1ABC9C', '#F39C12', '#7F8C8D',
+    '#3498DB', '#9B59B6', '#2ECC71', '#E84393', '#00B894', '#0984E3',
+    '#6C5CE7', '#FD79A8',
+)
+_SYNCABLE_LABEL_TAGS = {'RectangleLabels', 'PolygonLabels'}
+
+
+def _pick_label_color(label_name: str) -> str:
+    digest = hashlib.md5(label_name.encode('utf-8')).digest()
+    idx = int.from_bytes(digest[:2], 'big') % len(_LABEL_COLOR_PALETTE)
+    return _LABEL_COLOR_PALETTE[idx]
+
+
+def _sync_classes_into_label_config(project: Project, classes_list: List[str]) -> int:
+    """Append missing classes from classes.txt into RectangleLabels/PolygonLabels in project.label_config."""
+    if not classes_list or not project.label_config:
+        return 0
+
+    try:
+        root = ET.fromstring(project.label_config)
+    except ET.ParseError:
+        logger.debug('Skipping label_config sync for project %s: invalid XML', project.id)
+        return 0
+
+    added_unique = set()
+    modified = False
+    for elem in root.iter():
+        if elem.tag not in _SYNCABLE_LABEL_TAGS:
+            continue
+        existing = {
+            child.attrib.get('value')
+            for child in elem
+            if child.tag == 'Label' and child.attrib.get('value') is not None
+        }
+        for cls_name in classes_list:
+            if cls_name in existing:
+                continue
+            label_el = ET.SubElement(elem, 'Label', {'value': cls_name, 'background': _pick_label_color(cls_name)})
+            label_el.tail = '\n'
+            existing.add(cls_name)
+            added_unique.add(cls_name)
+            modified = True
+
+    if not modified:
+        return 0
+
+    new_config = ET.tostring(root, encoding='unicode')
+    try:
+        project.validate_config(new_config)
+        project.label_config = new_config
+        project.save(update_fields=['label_config'])
+        return len(added_unique)
+    except Exception:
+        logger.warning('Failed to sync classes.txt into project %s label_config', project.id, exc_info=True)
+        return 0
+
+
 def _collect_uploaded_files(request, field_names: Tuple[str, ...] = ('files', 'file')) -> List[Any]:
     collected: List[Any] = []
     seen_keys = set()
@@ -228,6 +289,7 @@ class ImportFolderAPI(APIView):
             labels_dir.mkdir(parents=True, exist_ok=True)
 
             classes_count = 0
+            labels_synced = 0
             classes_file = request.FILES.get('classes')
             if classes_file is not None:
                 raw_classes = classes_file.read()
@@ -237,6 +299,7 @@ class ImportFolderAPI(APIView):
                     ln.strip() for ln in raw_classes.decode('utf-8', errors='replace').splitlines() if ln.strip()
                 ]
                 classes_count = len(classes_list)
+                labels_synced = _sync_classes_into_label_config(project, classes_list)
 
             labels_saved = 0
             for label_file in request.FILES.getlist('labels'):
@@ -252,6 +315,7 @@ class ImportFolderAPI(APIView):
                     'folder_name': Path(rel_folder_key).name,
                     'storage_path': rel_folder_key,
                     'classes_count': classes_count,
+                    'labels_synced': labels_synced,
                     'labels_saved': labels_saved,
                 },
                 status=status.HTTP_200_OK,

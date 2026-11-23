@@ -43,7 +43,7 @@
       "#ls-label-filter-panel {",
       "  position: fixed;",
       "  z-index: 9998;",
-      "  width: 268px;",
+      "  width: 315px;",
       "  border-radius: 10px;",
       "  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;",
       "  font-size: 13px;",
@@ -155,7 +155,7 @@
       "  background: rgba(128, 128, 128, 0.22);",
       "}",
       ".lsf-flt-list {",
-      "  max-height: 250px;",
+      "  max-height: 300px;",
       "  overflow-y: auto;",
       "  display: flex;",
       "  flex-direction: column;",
@@ -163,7 +163,7 @@
       "}",
       ".lsf-flt-row {",
       "  display: flex;",
-      "  align-items: center;",
+      "  align-items: flex-start;",
       "  justify-content: space-between;",
       "  gap: 6px;",
       "  padding: 4px 6px;",
@@ -178,7 +178,7 @@
       "}",
       ".lsf-flt-left {",
       "  display: flex;",
-      "  align-items: center;",
+      "  align-items: flex-start;",
       "  gap: 7px;",
       "  min-width: 0;",
       "  flex: 1;",
@@ -186,7 +186,7 @@
       ".lsf-flt-left input[type='checkbox'] {",
       "  width: 14px;",
       "  height: 14px;",
-      "  margin: 0;",
+      "  margin: 2px 0 0 0;",
       "  cursor: pointer;",
       "  accent-color: #27ae60;",
       "  flex-shrink: 0;",
@@ -194,14 +194,16 @@
       ".lsf-flt-dot {",
       "  width: 9px;",
       "  height: 9px;",
+      "  margin-top: 4px;",
       "  border-radius: 50%;",
       "  flex-shrink: 0;",
       "  border: 1px solid rgba(0,0,0,0.2);",
       "}",
       ".lsf-flt-name {",
-      "  overflow: hidden;",
-      "  text-overflow: ellipsis;",
-      "  white-space: nowrap;",
+      "  white-space: normal;",
+      "  word-break: break-word;",
+      "  overflow-wrap: anywhere;",
+      "  line-height: 1.3;",
       "  font-size: 12.5px;",
       "}",
       ".lsf-flt-right {",
@@ -209,6 +211,7 @@
       "  align-items: center;",
       "  gap: 5px;",
       "  flex-shrink: 0;",
+      "  padding-top: 1px;",
       "}",
       ".lsf-flt-count {",
       "  font-size: 11px;",
@@ -224,12 +227,12 @@
       "  padding: 1px 5px;",
       "  border-radius: 4px;",
       "  cursor: pointer;",
-      "  opacity: 0;",
-      "  transition: opacity 0.12s ease, background 0.12s ease;",
+      "  display: none;",
+      "  transition: background 0.12s ease, color 0.12s ease;",
       "}",
       ".lsf-flt-row:hover .lsf-flt-solo-btn,",
       ".lsf-flt-solo-btn:focus {",
-      "  opacity: 1;",
+      "  display: inline-block;",
       "}",
       ".lsf-flt-solo-btn:hover {",
       "  background: #27ae60;",
@@ -246,7 +249,7 @@
   }
 
   function clampPosition(left, top) {
-    var w = (rootEl && rootEl.offsetWidth) || 268;
+    var w = (rootEl && rootEl.offsetWidth) || 315;
     var h = (rootEl && rootEl.offsetHeight) || 120;
     var maxLeft = Math.max(8, window.innerWidth - w - 8);
     var maxTop = Math.max(8, window.innerHeight - Math.min(h, 80) - 8);
@@ -277,8 +280,8 @@
     var defaultTop = 108;
     if (mainView) {
       var rect = mainView.getBoundingClientRect();
-      if (rect && rect.width > 300) {
-        defaultLeft = rect.right - 284;
+      if (rect && rect.width > 340) {
+        defaultLeft = rect.right - 331;
         defaultTop = Math.max(68, rect.top + 12);
       }
     }

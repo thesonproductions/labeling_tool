@@ -1,7 +1,15 @@
 import { getRoot } from "mobx-state-tree";
 import { AnnotationPreview } from "../Common/AnnotationPreview/AnnotationPreview";
 
-const imgDefaultProps = { crossOrigin: "anonymous" };
+const imgDefaultProps = { crossOrigin: "anonymous", loading: "lazy", decoding: "async" };
+
+const toThumbnailUrl = (src) => {
+  if (typeof src !== "string" || !src.includes("/data/upload/") || /[?&]thumb=/.test(src)) {
+    return src;
+  }
+  const sep = src.includes("?") ? "&" : "?";
+  return `${src}${sep}thumb=1&w=240`;
+};
 
 export const ImageCell = (column) => {
   const {
@@ -16,11 +24,13 @@ export const ImageCell = (column) => {
 
   if (!imgSrc) return null;
 
+  const thumbSrc = toThumbnailUrl(imgSrc);
+
   return renderImagePreview ? (
     <img
       {...imgDefaultProps}
-      key={imgSrc}
-      src={imgSrc}
+      key={thumbSrc}
+      src={thumbSrc}
       alt="Data"
       style={{
         maxHeight: "100%",
@@ -36,7 +46,7 @@ export const ImageCell = (column) => {
       config={getRoot(original).SDK}
       name={alias}
       variant="120x120"
-      fallbackImage={value}
+      fallbackImage={thumbSrc}
       style={{
         maxHeight: "100%",
         maxWidth: "100px",

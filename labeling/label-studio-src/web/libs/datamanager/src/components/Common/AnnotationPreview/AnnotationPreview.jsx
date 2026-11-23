@@ -145,6 +145,8 @@ export const AnnotationPreview = injector(
         />
         <img
           src={props.fallbackImage}
+          loading="lazy"
+          decoding="async"
           style={{ ...(style ?? {}), opacity: 0.5 }}
           alt=""
           width={props.width}

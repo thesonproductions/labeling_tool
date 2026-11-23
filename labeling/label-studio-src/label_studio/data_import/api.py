@@ -1,9 +1,13 @@
 """This file and its contents are licensed under the Apache License 2.0. Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
 """
+import hashlib
 import json
 import logging
 import mimetypes
+import os
+import threading
 import time
+from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from core.decorators import override_report_only_csp
@@ -17,7 +21,7 @@ from csp.decorators import csp
 from django.conf import settings
 from django.core.files.storage import FileSystemStorage
 from django.db import transaction
-from django.http import HttpResponse
+from django.http import HttpResponse, HttpResponseNotModified
 from django.utils.decorators import method_decorator
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
@@ -899,6 +903,77 @@ class FileUploadAPI(generics.RetrieveUpdateDestroyAPIView):
         return super(FileUploadAPI, self).put(*args, **kwargs)
 
 
+_THUMBNAIL_MIN_DIM = 64
+_THUMBNAIL_MAX_DIM = 512
+_THUMBNAIL_DEFAULT_DIM = 240
+_UPLOAD_CACHE_CONTROL = 'private, max-age=86400'
+_NON_THUMBNAIL_IMAGE_TYPES = {'image/svg+xml', 'image/gif'}
+
+
+def _parse_thumbnail_dim(raw_value) -> int:
+    try:
+        dim = int(raw_value)
+    except (TypeError, ValueError):
+        return _THUMBNAIL_DEFAULT_DIM
+    return max(_THUMBNAIL_MIN_DIM, min(_THUMBNAIL_MAX_DIM, dim))
+
+
+def _etag_matches(if_none_match: str, etag: str) -> bool:
+    if not if_none_match:
+        return False
+    target = etag.strip()
+    for candidate in if_none_match.split(','):
+        token = candidate.strip()
+        if token == '*':
+            return True
+        if token.startswith('W/'):
+            token = token[2:].strip()
+        if token == target:
+            return True
+    return False
+
+
+def _get_or_create_thumbnail(file_path: str, cache_key: str, max_dim: int):
+    """Return a disk-cached JPEG thumbnail path, generating it atomically if absent."""
+    thumb_dir = Path(settings.MEDIA_ROOT) / '.thumbs'
+    thumb_path = thumb_dir / f'{cache_key}_{max_dim}.jpg'
+    try:
+        if thumb_path.is_file() and thumb_path.stat().st_size > 0:
+            return thumb_path
+    except OSError:
+        pass
+
+    tmp_path = None
+    try:
+        from PIL import Image, ImageOps
+
+        thumb_dir.mkdir(parents=True, exist_ok=True)
+        with Image.open(file_path) as im:
+            im = ImageOps.exif_transpose(im)
+            if im.mode in ('RGBA', 'LA') or (im.mode == 'P' and 'transparency' in im.info):
+                rgba = im.convert('RGBA')
+                bg = Image.new('RGB', rgba.size, (255, 255, 255))
+                bg.paste(rgba, mask=rgba.split()[-1])
+                im = bg
+            elif im.mode != 'RGB':
+                im = im.convert('RGB')
+
+            im.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+            tmp_path = thumb_dir / f'.{cache_key}_{max_dim}.{os.getpid()}.{threading.get_ident()}.tmp.jpg'
+            im.save(tmp_path, format='JPEG', quality=80, optimize=True)
+            os.replace(tmp_path, thumb_path)
+            tmp_path = None
+        return thumb_path
+    except Exception:
+        logger.debug('Thumbnail generation failed for %s; falling back to original file', file_path, exc_info=True)
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return None
+
+
 @method_decorator(
     name='get',
     decorator=extend_schema(
@@ -930,16 +1005,62 @@ class UploadedFileResponse(generics.RetrieveAPIView):
         logger.debug(f'Fetch uploaded file by user {request.user} => {file}')
         file_upload = FileUpload.objects.filter(file=file).last()
 
+        if file_upload is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
         if not file_upload.has_permission(request.user):
             return Response(status=status.HTTP_403_FORBIDDEN)
 
         file = file_upload.file
-        if file.storage.exists(file.name):
-            content_type, encoding = mimetypes.guess_type(str(file.name))
-            content_type = content_type or 'application/octet-stream'
-            return RangedFileResponse(request, file.open(mode='rb'), content_type=content_type)
+        if not file.storage.exists(file.name):
+            return Response(status=status.HTTP_404_NOT_FOUND)
 
-        return Response(status=status.HTTP_404_NOT_FOUND)
+        content_type, _ = mimetypes.guess_type(str(file.name))
+        content_type = content_type or 'application/octet-stream'
+
+        is_local = isinstance(file.storage, FileSystemStorage)
+        if is_local:
+            st = os.stat(file.path)
+            size, mtime_ns = st.st_size, st.st_mtime_ns
+        else:
+            size, mtime_ns = getattr(file, 'size', 0), 0
+
+        cache_key = hashlib.sha256(f'{file.name}:{size}:{mtime_ns}'.encode('utf-8')).hexdigest()[:24]
+        wants_thumb = str(request.GET.get('thumb', '')).strip().lower() in ('1', 'true', 'yes')
+        can_thumb = (
+            wants_thumb
+            and is_local
+            and content_type.startswith('image/')
+            and content_type not in _NON_THUMBNAIL_IMAGE_TYPES
+        )
+
+        if can_thumb:
+            max_dim = _parse_thumbnail_dim(request.GET.get('w'))
+            thumb_etag = f'"{cache_key}-thumb-{max_dim}"'
+            if _etag_matches(request.META.get('HTTP_IF_NONE_MATCH', ''), thumb_etag):
+                not_modified = HttpResponseNotModified()
+                not_modified['ETag'] = thumb_etag
+                not_modified['Cache-Control'] = _UPLOAD_CACHE_CONTROL
+                return not_modified
+
+            thumb_path = _get_or_create_thumbnail(file.path, cache_key, max_dim)
+            if thumb_path is not None:
+                response = RangedFileResponse(request, open(thumb_path, 'rb'), content_type='image/jpeg')
+                response['ETag'] = thumb_etag
+                response['Cache-Control'] = _UPLOAD_CACHE_CONTROL
+                return response
+
+        full_etag = f'"{cache_key}-full"'
+        if _etag_matches(request.META.get('HTTP_IF_NONE_MATCH', ''), full_etag):
+            not_modified = HttpResponseNotModified()
+            not_modified['ETag'] = full_etag
+            not_modified['Cache-Control'] = _UPLOAD_CACHE_CONTROL
+            return not_modified
+
+        response = RangedFileResponse(request, file.open(mode='rb'), content_type=content_type)
+        response['ETag'] = full_etag
+        response['Cache-Control'] = _UPLOAD_CACHE_CONTROL
+        return response
 
 
 @extend_schema(exclude=True)
